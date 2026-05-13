@@ -508,12 +508,32 @@ where
             decoded_bal,
         };
 
+        // Check leader payload cache early to influence state root strategy.
+        // If cache hit, we skip EVM and force Synchronous to avoid StateRootTask timeout.
+        let block_hash_for_cache = input.hash();
+        type CachedPayloadData<R> = (BlockExecutionOutput<R>, Vec<Address>);
+        let cache_hit = reth_evm::payload_cache::take_payload_execution::<
+            CachedPayloadData<N::Receipt>,
+        >(&block_hash_for_cache);
+        let is_cache_hit = cache_hit.is_some();
+
         // Plan the strategy used for state root computation.
-        let strategy = self.plan_state_root_computation();
+        // Force Synchronous on cache hit: StateRootTask expects execution updates via
+        // channels, but we skip EVM, so it would timeout (~1s waste).
+        // Force Synchronous on skip/defer state root: StateRootTask spawns 20 proof worker
+        // threads per block, but the result is discarded when state root is skipped/deferred.
+        // On single-machine testnets this causes thread storms (30K+ thread spawns).
+        let n42_skip_root = reth_evm::n42_skip_state_root() || reth_evm::n42_defer_state_root();
+        let strategy = if is_cache_hit || n42_skip_root {
+            StateRootStrategy::Synchronous
+        } else {
+            self.plan_state_root_computation()
+        };
 
         debug!(
             target: "engine::tree::payload_validator",
             ?strategy,
+            is_cache_hit,
             "Decided which state root algorithm to run"
         );
 
@@ -568,12 +588,36 @@ where
         // The receipt root task is spawned before execution and receives receipts incrementally
         // as transactions complete, allowing parallel computation during execution.
         let execute_block_start = Instant::now();
-        let (output, senders, receipt_root_rx) =
+        let (output, senders, receipt_root_rx) = if let Some((cached_output, cached_senders)) =
+            cache_hit
+        {
+            // Leader cache hit: skip EVM re-execution, reuse payload builder's results
+            info!(
+                target: "engine::tree::payload_validator",
+                block_number = input.num_hash().number,
+                %block_hash_for_cache,
+                "N42_PAYLOAD_CACHE_HIT: skipping EVM re-execution for leader-built block"
+            );
+            // Create a dummy channel — receiver will get RecvError, producing None for
+            // receipt_root_bloom, causing validate_block_post_execution to compute it from
+            // the cached receipts instead.
+            let (_tx, rx) = tokio::sync::oneshot::channel();
+            (cached_output, cached_senders, rx)
+        } else {
             match self.execute_block(state_provider, env, &input, &mut handle) {
                 Ok(output) => output,
                 Err(err) => return self.handle_execution_error(input, err, &parent_block),
-            };
+            }
+        };
+
         let execution_duration = execute_block_start.elapsed();
+        info!(
+            target: "engine::tree::payload_validator",
+            block_number = input.num_hash().number,
+            evm_ms = execution_duration.as_millis() as u64,
+            is_cache_hit,
+            "N42_NEW_PAYLOAD_EVM: block execution complete"
+        );
 
         // After executing the block we can stop prewarming transactions
         handle.stop_prewarming_execution();
@@ -586,6 +630,52 @@ where
         // Terminate caching task early since execution is complete and caching is no longer
         // needed. This frees up resources while state root computation continues.
         let valid_block_tx = handle.terminate_caching(Some(output.clone()));
+
+        // N42: check whether state root can be skipped BEFORE expensive post-execution work.
+        let n42_skip_root = reth_evm::n42_skip_state_root() || reth_evm::n42_defer_state_root();
+
+        // N42 fast path: cache hit + skip/defer state root → skip ALL expensive post-validation.
+        // The leader already validated this block. Skip convert_to_block (90K tx RLP decode) and
+        // validate_post_execution. This reduces follower new_payload from ~1000ms to ~10ms.
+        if is_cache_hit && n42_skip_root {
+            let block = convert_to_block(input)?.with_senders(senders);
+
+            if let Some(valid_block_tx) = valid_block_tx {
+                let _ = valid_block_tx.send(());
+            }
+
+            let trie_output = TrieUpdates::default();
+            let mode = if reth_evm::n42_skip_state_root() { "SKIP" } else { "DEFER" };
+            info!(
+                target: "engine::tree::payload_validator",
+                block_number = block.header().number(),
+                mode,
+                evm_ms = execution_duration.as_millis() as u64,
+                "N42_CACHE_HIT_FAST_PATH: skipping post-validation + state root"
+            );
+
+            self.metrics.block_validation.record_state_root(&trie_output, 0.0);
+
+            let hashed_state: LazyHashedPostState =
+                reth_tasks::LazyHandle::ready(HashedPostState::default());
+
+            let changeset_provider = overlay_factory.database_provider_ro().map_err(|e| {
+                InsertBlockError::new(block.clone().into_sealed_block(), e.into())
+            })?;
+
+            let executed_block = self.spawn_deferred_trie_task(
+                block,
+                output,
+                &ctx,
+                hashed_state,
+                Arc::new(trie_output),
+                changeset_provider,
+            );
+
+            return Ok((executed_block, None));
+        }
+
+        // Standard path: full post-execution validation
 
         // Spawn hashed post state computation in background so it runs concurrently with
         // block conversion and receipt root computation. This is a pure CPU-bound task
@@ -627,10 +717,12 @@ where
             receipt_root_rx
                 .blocking_recv()
                 .inspect_err(|_| {
-                    tracing::error!(
-                        target: "engine::tree::payload_validator",
-                        "Receipt root task dropped sender without result, receipt root calculation likely aborted"
-                    );
+                    if !is_cache_hit {
+                        tracing::error!(
+                            target: "engine::tree::payload_validator",
+                            "Receipt root task dropped sender without result, receipt root calculation likely aborted"
+                        );
+                    }
                 })
                 .ok()
         };
@@ -655,10 +747,33 @@ where
         );
 
         let root_time = Instant::now();
-        let mut maybe_state_root = None;
-        let mut state_root_task_failed = false;
+
+        // N42: skip or defer state root computation
+        // - SKIP mode: permanently skip, no async verification (benchmark only)
+        // - DEFER mode: skip on critical path, async verification after consensus commit
+        //   Sentinel: block.header().state_root() == B256::ZERO means leader deferred
+        let n42_skip_root = reth_evm::n42_skip_state_root()
+            || (reth_evm::n42_defer_state_root() && block.header().state_root() == B256::ZERO);
         #[cfg(feature = "trie-debug")]
         let mut trie_debug_recorders = Vec::new();
+
+        let (state_root, trie_output, root_elapsed) = if n42_skip_root {
+            let mode = if reth_evm::n42_skip_state_root() { "SKIP" } else { "DEFER" };
+            info!(
+                target: "engine::tree::payload_validator",
+                block_number = block.header().number(),
+                mode,
+                "N42_STATE_ROOT_{}: skipping state root computation on follower", mode
+            );
+            (block.header().state_root(), Arc::new(TrieUpdates::default()), std::time::Duration::ZERO)
+        // NOTE: Delayed state root was removed. When compact block cache hits,
+        // the Synchronous strategy already achieves root_ms=0. Deferring state root
+        // causes sparse trie corruption (empty TrieUpdates → stale anchor) which breaks
+        // StateRootTask for subsequent non-compact blocks.
+        } else {
+
+        let mut maybe_state_root = None;
+        let mut state_root_task_failed = false;
 
         match strategy {
             StateRootStrategy::StateRootTask => {
@@ -785,13 +900,25 @@ where
             (root, Arc::new(updates), root_time.elapsed())
         };
 
+        (state_root, trie_output, root_elapsed)
+
+        }; // end of n42_skip_state_root branch
+
         self.metrics.block_validation.record_state_root(&trie_output, root_elapsed.as_secs_f64());
         self.metrics
             .record_state_root_gas_bucket(block.header().gas_used(), root_elapsed.as_secs_f64());
-        debug!(target: "engine::tree::payload_validator", ?root_elapsed, "Calculated state root");
+        info!(
+            target: "engine::tree::payload_validator",
+            block_number = block.header().number(),
+            gas_used = block.header().gas_used(),
+            root_ms = root_elapsed.as_millis() as u64,
+            evm_ms = execution_duration.as_millis() as u64,
+            total_ms = (execution_duration + root_elapsed).as_millis() as u64,
+            "N42_NEW_PAYLOAD_TOTAL: EVM + state root complete"
+        );
 
-        // ensure state root matches
-        if state_root != block.header().state_root() {
+        // ensure state root matches (skip check in benchmark/defer mode)
+        if !n42_skip_root && state_root != block.header().state_root() {
             #[cfg(feature = "trie-debug")]
             Self::write_trie_debug_recorders(block.header().number(), &trie_debug_recorders);
 

@@ -356,7 +356,10 @@ where
     // Rename file, not move
     rename(&tmp_path, file_path)?;
 
-    // fsync() directory
+    // fsync() directory — only on Unix. Windows does not allow opening a
+    // directory as a file, and NTFS journals metadata operations independently
+    // so the rename above is already crash-safe without an explicit dir fsync.
+    #[cfg(unix)]
     if let Some(parent) = file_path.parent() {
         OpenOptions::new()
             .read(true)

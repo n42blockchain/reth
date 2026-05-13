@@ -45,6 +45,30 @@ pub use engine::{ConfigureEngineEvm, ConvertTx, ExecutableTxIterator, Executable
 #[cfg(feature = "metrics")]
 pub mod metrics;
 pub mod noop;
+#[cfg(feature = "std")]
+pub mod payload_cache;
+/// Returns true if N42_SKIP_STATE_ROOT=1 is set (cached, read once at startup).
+/// Used for benchmark testing to measure throughput without state root overhead.
+#[cfg(feature = "std")]
+pub fn n42_skip_state_root() -> bool {
+    static SKIP: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *SKIP.get_or_init(|| std::env::var("N42_SKIP_STATE_ROOT").map_or(false, |v| v == "1"))
+}
+
+/// Returns true if N42_DEFER_STATE_ROOT=1 is set (cached, read once at startup).
+///
+/// When enabled, state root computation is removed from the consensus critical path:
+/// - Leader uses B256::ZERO as placeholder in block header during finish()
+/// - Follower skips state root validation for blocks with B256::ZERO state root
+/// - State root is computed asynchronously after consensus commit for verification
+///
+/// Unlike `n42_skip_state_root` (which permanently skips), defer mode still verifies
+/// state root correctness — just not on the critical path.
+#[cfg(feature = "std")]
+pub fn n42_defer_state_root() -> bool {
+    static DEFER: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *DEFER.get_or_init(|| std::env::var("N42_DEFER_STATE_ROOT").map_or(false, |v| v == "1"))
+}
 #[cfg(any(test, feature = "test-utils"))]
 /// test helpers for mocking executor
 pub mod test_utils;

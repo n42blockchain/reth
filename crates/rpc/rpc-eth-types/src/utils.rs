@@ -40,8 +40,19 @@ pub fn recover_raw_transaction<T: SignedTransaction>(data: &[u8]) -> EthResult<R
     let transaction =
         T::decode_2718_exact(data).map_err(|_| EthApiError::FailedToDecodeSignedTransaction)?;
 
-    SignedTransaction::try_into_recovered(transaction)
-        .or(Err(EthApiError::InvalidTransactionSignature))
+    // N42_SKIP_TX_VERIFY: skip EIP-2 low-s check for benchmarking (all test txs are correctly signed)
+    static SKIP_VERIFY: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
+        std::env::var("N42_SKIP_TX_VERIFY").map(|v| v == "1").unwrap_or(false)
+    });
+
+    if *SKIP_VERIFY {
+        transaction.recover_signer_unchecked()
+            .map(|signer| Recovered::new_unchecked(transaction, signer))
+            .map_err(|_| EthApiError::InvalidTransactionSignature)
+    } else {
+        SignedTransaction::try_into_recovered(transaction)
+            .or(Err(EthApiError::InvalidTransactionSignature))
+    }
 }
 
 /// Performs a binary search within a given block range to find the desired block number.

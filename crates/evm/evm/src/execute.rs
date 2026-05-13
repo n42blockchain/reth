@@ -477,23 +477,58 @@ where
         state: impl StateProvider,
         state_root_precomputed: Option<(B256, TrieUpdates)>,
     ) -> Result<BlockBuilderOutcome<N>, BlockExecutionError> {
+        let finish_start = std::time::Instant::now();
+
+        let executor_finish_start = std::time::Instant::now();
         let (evm, result) = self.executor.finish()?;
+        let executor_finish_ms = executor_finish_start.elapsed().as_millis() as u64;
+
+        let evm_finish_start = std::time::Instant::now();
         let (db, evm_env) = evm.finish();
+        let evm_finish_ms = evm_finish_start.elapsed().as_millis() as u64;
 
         // merge all transitions into bundle state
+        let merge_start = std::time::Instant::now();
         db.merge_transitions(BundleRetention::Reverts);
+        let merge_transitions_ms = merge_start.elapsed().as_millis() as u64;
+        let bundle_finalize_ms = executor_finish_ms + evm_finish_ms + merge_transitions_ms;
 
+        let hash_start = std::time::Instant::now();
         let hashed_state = state.hashed_post_state(&db.bundle_state);
-        let (state_root, trie_updates) = match state_root_precomputed {
-            Some(precomputed) => precomputed,
-            None => state
+        let state_hash_ms = hash_start.elapsed().as_millis() as u64;
+
+        #[cfg(feature = "std")]
+        let n42_skip = crate::n42_skip_state_root() || crate::n42_defer_state_root();
+        #[cfg(not(feature = "std"))]
+        let n42_skip = false;
+
+        let mut state_root_ms = 0u64;
+        let (state_root, trie_updates) = if n42_skip {
+            #[cfg(feature = "std")]
+            {
+                let mode = if crate::n42_skip_state_root() { "SKIP" } else { "DEFER" };
+                tracing::info!(
+                    target: "evm::execute",
+                    mode,
+                    "N42_STATE_ROOT_{}: using B256::ZERO placeholder in leader finish()", mode
+                );
+            }
+            (alloy_primitives::B256::ZERO, Default::default())
+        } else if let Some(precomputed) = state_root_precomputed {
+            precomputed
+        } else {
+            let root_start = std::time::Instant::now();
+            let result = state
                 .state_root_with_updates(hashed_state.clone())
-                .map_err(BlockExecutionError::other)?,
+                .map_err(BlockExecutionError::other)?;
+            state_root_ms = root_start.elapsed().as_millis() as u64;
+            result
         };
 
         let (transactions, senders) =
             self.transactions.into_iter().map(|tx| tx.into_parts()).unzip();
 
+        let assemble_start = std::time::Instant::now();
         let block = self.assembler.assemble_block(BlockAssemblerInput {
             evm_env,
             execution_ctx: self.ctx,
@@ -504,8 +539,28 @@ where
             state_provider: &state,
             state_root,
         })?;
+        let assemble_block_ms = assemble_start.elapsed().as_millis() as u64;
 
         let block = RecoveredBlock::new_unhashed(block, senders);
+        let trie_storage_nodes =
+            trie_updates.storage_tries.values().map(|updates| updates.len()).sum::<usize>();
+        tracing::info!(
+            target: "evm::execute",
+            executor_finish_ms,
+            evm_finish_ms,
+            merge_transitions_ms,
+            bundle_finalize_ms,
+            state_hash_ms,
+            state_root_ms,
+            assemble_block_ms,
+            total_finish_ms = finish_start.elapsed().as_millis() as u64,
+            skipped_state_root = n42_skip,
+            trie_account_nodes = trie_updates.account_nodes.len(),
+            trie_removed_nodes = trie_updates.removed_nodes.len(),
+            trie_storage_tries = trie_updates.storage_tries.len(),
+            trie_storage_nodes,
+            "N42_FINISH_BREAKDOWN: builder.finish() stage breakdown"
+        );
 
         Ok(BlockBuilderOutcome { execution_result: result, hashed_state, trie_updates, block })
     }

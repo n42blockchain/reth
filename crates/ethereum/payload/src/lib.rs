@@ -22,7 +22,7 @@ use reth_errors::{BlockExecutionError, BlockValidationError, ConsensusError};
 use reth_ethereum_primitives::{EthPrimitives, TransactionSigned};
 use reth_evm::{
     block::TxResult,
-    execute::{BlockBuilder, BlockBuilderOutcome, BlockExecutor},
+    execute::{BlockBuilder, BlockBuilderOutcome, BlockExecutionOutput, BlockExecutor},
     ConfigureEvm, Evm, NextBlockEnvAttributes,
 };
 use reth_evm_ethereum::EthEvmConfig;
@@ -40,7 +40,7 @@ use reth_transaction_pool::{
 };
 use revm::context_interface::{Block as _, Cfg as _};
 use std::sync::Arc;
-use tracing::{debug, trace, warn};
+use tracing::{debug, info, trace, warn};
 
 mod config;
 pub use config::*;
@@ -252,7 +252,50 @@ where
     let withdrawals_rlp_length =
         attributes.withdrawals.as_ref().map(|withdrawals| withdrawals.length()).unwrap_or(0);
 
-    while let Some(pool_tx) = best_txs.next() {
+    // N42: per-block transaction count limit to prevent oversized blocks.
+    static MAX_TXS: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    let max_txs_per_block = *MAX_TXS.get_or_init(|| {
+        std::env::var("N42_MAX_TXS_PER_BLOCK")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(80_000)
+    });
+    // N42: build time budget — stop packing when exceeded (checked every 256 txs).
+    static BUILD_BUDGET_MS: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    let build_time_budget = std::time::Duration::from_millis(
+        *BUILD_BUDGET_MS.get_or_init(|| {
+            std::env::var("N42_BUILD_TIME_BUDGET_MS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(1000u64)
+        }),
+    );
+    let mut tx_count: usize = 0;
+
+    let packing_start = std::time::Instant::now();
+    let mut evm_exec_total = std::time::Duration::ZERO;
+    let mut iter_total = std::time::Duration::ZERO;
+    let mut consensus_total = std::time::Duration::ZERO;
+
+    // Optimization 1: Stop processing new arrivals during packing.
+    // The iterator already holds a snapshot; new txs arriving mid-pack only add
+    // overhead via broadcast channel polling (48K × try_recv calls).
+    best_txs.no_updates();
+
+    while let Some(pool_tx) = {
+        let iter_start = std::time::Instant::now();
+        let tx = best_txs.next();
+        iter_total += iter_start.elapsed();
+        tx
+    } {
+        if tx_count >= max_txs_per_block {
+            break;
+        }
+        // Check build time budget every 256 transactions to avoid per-tx syscall overhead.
+        if tx_count & 0xFF == 0 && tx_count > 0 && packing_start.elapsed() >= build_time_budget {
+            debug!(target: "payload_builder", tx_count, "build time budget exceeded, stopping packing");
+            break;
+        }
         // ensure we still have capacity for this transaction
         let exceeds_gas_limit = if is_amsterdam {
             let regular_available_gas = block_gas_limit.saturating_sub(block_regular_gas_used);
@@ -291,24 +334,34 @@ where
             return Ok(BuildOutcome::Cancelled)
         }
 
-        // convert tx to a signed transaction
+        // Optimization 3: Defer to_consensus() conversion — only needed for txs
+        // that pass the gas check above. Also track its cost separately.
+        let consensus_start = std::time::Instant::now();
         let tx = pool_tx.to_consensus();
+        consensus_total += consensus_start.elapsed();
 
-        let tx_rlp_len = tx.inner().length();
+        // Optimization 2: Skip RLP length computation and block size check
+        // for non-Osaka chains. The MAX_RLP_BLOCK_SIZE limit only applies to Osaka.
+        // This saves ~2µs/tx of RLP encoding traversal.
+        let tx_rlp_len = if is_osaka {
+            let len = tx.inner().length();
+            let estimated_block_size_with_tx =
+                block_transactions_rlp_length + len + withdrawals_rlp_length + 1024;
 
-        let estimated_block_size_with_tx =
-            block_transactions_rlp_length + tx_rlp_len + withdrawals_rlp_length + 1024; // 1Kb of overhead for the block header
-
-        if is_osaka && estimated_block_size_with_tx > MAX_RLP_BLOCK_SIZE {
-            best_txs.mark_invalid(
-                &pool_tx,
-                &InvalidPoolTransactionError::OversizedData {
-                    size: estimated_block_size_with_tx,
-                    limit: MAX_RLP_BLOCK_SIZE,
-                },
-            );
-            continue
-        }
+            if estimated_block_size_with_tx > MAX_RLP_BLOCK_SIZE {
+                best_txs.mark_invalid(
+                    &pool_tx,
+                    &InvalidPoolTransactionError::OversizedData {
+                        size: estimated_block_size_with_tx,
+                        limit: MAX_RLP_BLOCK_SIZE,
+                    },
+                );
+                continue
+            }
+            len
+        } else {
+            0
+        };
 
         // There's only limited amount of blob space available per block, so we need to check if
         // the EIP-4844 can still fit in the block
@@ -367,6 +420,7 @@ where
         let tx_hash = *tx.tx_hash();
 
         let mut tx_regular_gas_used = 0;
+        let evm_start = std::time::Instant::now();
         let gas_output = match builder.execute_transaction_with_result_closure(tx, |result| {
             tx_regular_gas_used = result.result().result.gas().block_regular_gas_used();
         }) {
@@ -412,6 +466,8 @@ where
             Err(err) => return Err(PayloadBuilderError::evm(err)),
         };
 
+        evm_exec_total += evm_start.elapsed();
+
         // add to the total blob gas used if the transaction successfully executed
         if let Some(blob_count) = tx_blob_count {
             block_blob_count += blob_count;
@@ -431,12 +487,33 @@ where
         cumulative_tx_gas_used += gas_used;
         block_regular_gas_used += tx_regular_gas_used;
         block_state_gas_used += gas_output.state_gas_used();
+        tx_count += 1;
 
         // Add blob tx sidecar to the payload.
         if let Some(sidecar) = blob_tx_sidecar {
             blob_sidecars.push_sidecar_variant(sidecar.as_ref().clone());
         }
     }
+
+    let packing_elapsed = packing_start.elapsed();
+    let other_ms = packing_elapsed
+        .saturating_sub(evm_exec_total)
+        .saturating_sub(iter_total)
+        .saturating_sub(consensus_total)
+        .as_millis() as u64;
+    info!(
+        target: "payload_builder",
+        id = %payload_id,
+        tx_count,
+        cumulative_tx_gas_used,
+        packing_ms = packing_elapsed.as_millis() as u64,
+        evm_exec_ms = evm_exec_total.as_millis() as u64,
+        pool_overhead_ms = packing_elapsed.saturating_sub(evm_exec_total).as_millis() as u64,
+        iter_ms = iter_total.as_millis() as u64,
+        consensus_ms = consensus_total.as_millis() as u64,
+        other_ms,
+        "N42_PAYLOAD_PACK: tx packing complete"
+    );
 
     // check if we have a better block
     if !is_better_payload(best_payload.as_ref(), total_fees) {
@@ -472,11 +549,37 @@ where
         builder.finish(state_provider.as_ref(), None)?
     };
 
+    // Extract requests before moving execution_result into cache.
     let requests = chain_spec
         .is_prague_active_at_timestamp(attributes.timestamp)
-        .then_some(execution_result.requests);
+        .then(|| execution_result.requests.clone());
 
+    // Seal the block first to get the hash, then cache execution output.
+    let senders = block.senders().to_vec();
     let sealed_block = Arc::new(block.into_sealed_block());
+
+    // Cache execution output for leader's new_payload AND broadcast to followers.
+    {
+        let bundle_state = db.take_bundle();
+        let block_hash = sealed_block.hash();
+        let execution_output = BlockExecutionOutput {
+            state: bundle_state,
+            result: execution_result,
+        };
+        reth_evm::payload_cache::store_broadcast_execution(
+            block_hash,
+            (execution_output.clone(), senders.clone()),
+        );
+        reth_evm::payload_cache::store_payload_execution(
+            block_hash,
+            (execution_output, senders),
+        );
+        info!(
+            target: "payload_builder",
+            %block_hash,
+            "N42_PAYLOAD_CACHE: cached execution output for new_payload + broadcast"
+        );
+    }
     debug!(target: "payload_builder", id=%payload_id, sealed_block_header = ?sealed_block.sealed_header(), "sealed built block");
 
     if is_osaka && sealed_block.rlp_length() > MAX_RLP_BLOCK_SIZE {
