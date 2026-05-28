@@ -9,7 +9,7 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 use alloy_consensus::Transaction;
-use alloy_primitives::U256;
+use alloy_primitives::{Bytes, U256};
 use alloy_rlp::Encodable;
 use alloy_rpc_types_engine::PayloadAttributes as EthPayloadAttributes;
 use reth_basic_payload_builder::{
@@ -131,7 +131,7 @@ where
             self.pool.clone(),
             self.builder_config.clone(),
             args,
-            |attributes| self.pool.best_transactions_with_attributes(attributes),
+            |_| -> BestTransactionsIter<Pool> { Box::new(std::iter::empty()) },
         )?
         .into_payload()
         .ok_or_else(|| PayloadBuilderError::MissingPayload)
@@ -175,7 +175,7 @@ where
             execution_cache.cache().clone(),
             // It's ok to recreate the cache every time, because it's cheap to do so for a vanilla
             // Ethereum builder every 12s.
-            CachedStateMetrics::zeroed(CachedStateMetricsSource::Builder),
+            Some(CachedStateMetrics::zeroed(CachedStateMetricsSource::Builder)),
         ));
     }
     let state = StateProviderDatabase::new(state_provider.as_ref());
@@ -321,7 +321,7 @@ where
             // continue
             best_txs.mark_invalid(
                 &pool_tx,
-                &InvalidPoolTransactionError::ExceedsGasLimit(
+                InvalidPoolTransactionError::ExceedsGasLimit(
                     transaction_gas_limit,
                     block_available_gas,
                 ),
@@ -351,7 +351,7 @@ where
             if estimated_block_size_with_tx > MAX_RLP_BLOCK_SIZE {
                 best_txs.mark_invalid(
                     &pool_tx,
-                    &InvalidPoolTransactionError::OversizedData {
+                    InvalidPoolTransactionError::OversizedData {
                         size: estimated_block_size_with_tx,
                         limit: MAX_RLP_BLOCK_SIZE,
                     },
@@ -377,7 +377,7 @@ where
                 trace!(target: "payload_builder", tx=?tx.hash(), ?block_blob_count, "skipping blob transaction because it would exceed the max blob count per block");
                 best_txs.mark_invalid(
                     &pool_tx,
-                    &InvalidPoolTransactionError::Eip4844(
+                    InvalidPoolTransactionError::Eip4844(
                         Eip4844PoolTransactionError::TooManyEip4844Blobs {
                             have: block_blob_count + tx_blob_count,
                             permitted: max_blob_count,
@@ -410,7 +410,7 @@ where
             blob_tx_sidecar = match blob_sidecar_result {
                 Ok(sidecar) => Some(sidecar),
                 Err(error) => {
-                    best_txs.mark_invalid(&pool_tx, &InvalidPoolTransactionError::Eip4844(error));
+                    best_txs.mark_invalid(&pool_tx, InvalidPoolTransactionError::Eip4844(error));
                     continue
                 }
             };
@@ -437,7 +437,7 @@ where
                     trace!(target: "payload_builder", %error, ?tx_hash, "skipping invalid transaction and its descendants");
                     best_txs.mark_invalid(
                         &pool_tx,
-                        &InvalidPoolTransactionError::Consensus(
+                        InvalidPoolTransactionError::Consensus(
                             InvalidTransactionError::TxTypeNotSupported,
                         ),
                     );
@@ -455,7 +455,7 @@ where
                 trace!(target: "payload_builder", %transaction_gas_limit, %block_available_gas, ?tx_hash, "skipping transaction exceeding block gas limit");
                 best_txs.mark_invalid(
                     &pool_tx,
-                    &InvalidPoolTransactionError::ExceedsGasLimit(
+                    InvalidPoolTransactionError::ExceedsGasLimit(
                         transaction_gas_limit,
                         block_available_gas,
                     ),
@@ -523,7 +523,9 @@ where
         return Ok(BuildOutcome::Aborted { fees: total_fees, cached_reads })
     }
 
-    let BlockBuilderOutcome { execution_result, block, .. } = if let Some(mut handle) = trie_handle
+    let BlockBuilderOutcome { execution_result, block, block_access_list, .. } = if let Some(
+        mut handle,
+    ) = trie_handle
     {
         // Drop the state hook, which drops the StateHookSender and triggers
         // FinishedStateUpdates via its Drop impl, signaling the trie task to finalize.
@@ -554,14 +556,13 @@ where
         .is_prague_active_at_timestamp(attributes.timestamp)
         .then(|| execution_result.requests.clone());
 
-    // Seal the block first to get the hash, then cache execution output.
-    let senders = block.senders().to_vec();
-    let sealed_block = Arc::new(block.into_sealed_block());
-
     // Cache execution output for leader's new_payload AND broadcast to followers.
+    // Use the recovered block by reference — it is still needed to build the payload below,
+    // so we must not consume it via into_sealed_block().
     {
         let bundle_state = db.take_bundle();
-        let block_hash = sealed_block.hash();
+        let block_hash = block.hash();
+        let senders = block.senders().to_vec();
         let execution_output = BlockExecutionOutput {
             state: bundle_state,
             result: execution_result,
@@ -580,16 +581,18 @@ where
             "N42_PAYLOAD_CACHE: cached execution output for new_payload + broadcast"
         );
     }
-    debug!(target: "payload_builder", id=%payload_id, sealed_block_header = ?sealed_block.sealed_header(), "sealed built block");
+    debug!(target: "payload_builder", id=%payload_id, sealed_block_header = ?block.sealed_header(), "sealed built block");
 
-    if is_osaka && sealed_block.rlp_length() > MAX_RLP_BLOCK_SIZE {
+    if is_osaka && block.rlp_length() > MAX_RLP_BLOCK_SIZE {
         return Err(PayloadBuilderError::other(ConsensusError::BlockTooLarge {
-            rlp_length: sealed_block.rlp_length(),
+            rlp_length: block.rlp_length(),
             max_rlp_length: MAX_RLP_BLOCK_SIZE,
         }));
     }
 
-    let payload = EthBuiltPayload::new(sealed_block, total_fees, requests, None)
+    let block_access_list: Option<Bytes> =
+        block_access_list.map(|block_access_list| alloy_rlp::encode(&block_access_list).into());
+    let payload = EthBuiltPayload::new(Arc::new(block), total_fees, requests, block_access_list)
         // add blob sidecars from the executed txs
         .with_sidecars(blob_sidecars);
 

@@ -1,4 +1,4 @@
-// Generates a rich GitHub Actions job summary for reth-bench results.
+// Generates a rich GitHub Actions job summary for benchmark results.
 //
 // Reads from environment:
 //   BENCH_WORK_DIR       – Directory containing summary.json
@@ -7,14 +7,28 @@
 //   BENCH_CORES          – CPU core limit (0 = all)
 //   BENCH_WARMUP_BLOCKS  – Number of warmup blocks
 //   BENCH_SAMPLY         – 'true' if samply profiling was enabled
-//   BENCH_ABBA           – 'true' if ABBA interleaved order was used
+//   BENCH_RUN_PAIRS      – Number of configured benchmark run pairs
 //
 // Usage from actions/github-script:
 //   const jobSummary = require('./.github/scripts/bench-job-summary.js');
 //   await jobSummary({ core, context, chartSha, grafanaUrl, runId });
 
 const fs = require('fs');
-const { verdict, loadSamplyUrls, blocksLabel, metricRows, waitTimeRows } = require('./bench-utils');
+const { verdict, loadSamplyUrls, blocksLabel, metricRows, waitTimeRows, fmtChange } = require('./bench-utils');
+
+function fmtMetricValue(v) {
+  if (v === null || v === undefined || !Number.isFinite(v)) return 'n/a';
+  const abs = Math.abs(v);
+  if ((abs !== 0 && abs < 0.001) || abs >= 100000) return v.toExponential(3);
+  if (abs < 1) return v.toPrecision(3);
+  if (abs < 100) return v.toFixed(3).replace(/0+$/, '').replace(/\.$/, '');
+  return v.toFixed(1).replace(/\.0$/, '');
+}
+
+function fmtTargetMetricValue(metric, v) {
+  if (metric.unit === 'seconds') return `${(v * 1000).toFixed(2)}ms`;
+  return fmtMetricValue(v);
+}
 
 module.exports = async function ({ core, context, chartSha, grafanaUrl, runId }) {
   let summary;
@@ -63,6 +77,23 @@ module.exports = async function ({ core, context, chartSha, grafanaUrl, runId })
     md += `|--------|----------|--------|\n`;
     for (const r of wtRows) {
       md += `| ${r.title} | ${r.baseline} | ${r.feature} |\n`;
+    }
+    md += '\n';
+  }
+
+  // Target metrics
+  const targetMetrics = summary.target_metrics;
+  const changedTargetMetrics = targetMetrics?.changed || [];
+  if (changedTargetMetrics.length > 0) {
+    md += `### Target Metrics\n\n`;
+    md += `| Metric | Baseline | Feature | Change |\n`;
+    md += `|--------|----------|---------|--------|\n`;
+    for (const metric of changedTargetMetrics) {
+      for (const statName of metric.display_stats || []) {
+        const change = metric.changes?.[statName];
+        if (!change || change.sig === 'neutral') continue;
+        md += `| \`${metric.name} ${statName}\` | ${fmtTargetMetricValue(metric, change.baseline)} | ${fmtTargetMetricValue(metric, change.feature)} | ${fmtChange(change)} |\n`;
+      }
     }
     md += '\n';
   }

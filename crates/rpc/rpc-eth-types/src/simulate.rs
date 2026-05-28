@@ -256,22 +256,21 @@ where
         tx.as_mut().set_kind(TxKind::Create);
     }
 
-    // if we can't build the _entire_ transaction yet, we need to check the fee values
+    // if we can't build the _entire_ transaction yet, fill the fee fields.
+    //
+    // Per the eth_simulateV1 spec, unspecified fee fields default to 0 (not the block base fee),
+    // matching geth's `CallDefaults` behavior. This lets simulation behave like a free-gas
+    // `eth_call` when validation is off, and surfaces "max fee per gas less than block base fee"
+    // errors when validation is on with a real base fee.
+    let _ = block_base_fee_per_gas;
     if tx.as_ref().output_tx_type_checked().is_none() {
         if tx_type.is_legacy() || tx_type.is_eip2930() {
             if tx.as_ref().gas_price().is_none() {
-                tx.as_mut().set_gas_price(block_base_fee_per_gas as u128);
+                tx.as_mut().set_gas_price(0);
             }
         } else {
-            // set dynamic 1559 fees
             if tx.as_ref().max_fee_per_gas().is_none() {
-                let mut max_fee_per_gas = block_base_fee_per_gas as u128;
-                if let Some(prio_fee) = tx.as_ref().max_priority_fee_per_gas() {
-                    // if a prio fee is provided we need to select the max fee accordingly
-                    // because the base fee must be higher than the prio fee.
-                    max_fee_per_gas = prio_fee.max(max_fee_per_gas);
-                }
-                tx.as_mut().set_max_fee_per_gas(max_fee_per_gas);
+                tx.as_mut().set_max_fee_per_gas(0);
             }
             if tx.as_ref().max_priority_fee_per_gas().is_none() {
                 tx.as_mut().set_max_priority_fee_per_gas(0);
@@ -315,9 +314,9 @@ where
                         ..SimulateError::invalid_params()
                     }),
                     gas_used: gas.tx_gas_used(),
+                    max_used_gas: Some(gas.total_gas_spent()),
                     logs: Vec::new(),
                     status: false,
-                    ..Default::default()
                 }
             }
             ExecutionResult::Revert { output, gas, .. } => {
@@ -330,15 +329,16 @@ where
                         ..SimulateError::invalid_params()
                     }),
                     gas_used: gas.tx_gas_used(),
+                    max_used_gas: Some(gas.total_gas_spent()),
                     status: false,
                     logs: Vec::new(),
-                    ..Default::default()
                 }
             }
             ExecutionResult::Success { output, gas, logs, .. } => SimCallResult {
                 return_data: output.into_data(),
                 error: None,
                 gas_used: gas.tx_gas_used(),
+                max_used_gas: Some(gas.total_gas_spent()),
                 logs: logs
                     .into_iter()
                     .map(|log| {
@@ -356,7 +356,6 @@ where
                     })
                     .collect(),
                 status: true,
-                ..Default::default()
             },
         };
 

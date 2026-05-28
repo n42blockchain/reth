@@ -706,7 +706,34 @@ impl SegmentedDownload {
         piece_progress_bytes: &AtomicU64,
         cancel_token: &CancellationToken,
     ) -> std::result::Result<(), PieceAttemptFailure> {
-        use std::os::unix::fs::FileExt;
+        // Cross-platform positional write helper (unix: write_all_at, windows: seek_write loop).
+        #[cfg(unix)]
+        fn write_at(file: &std::fs::File, buf: &[u8], offset: u64) -> std::io::Result<()> {
+            use std::os::unix::fs::FileExt;
+            file.write_all_at(buf, offset)
+        }
+        #[cfg(windows)]
+        fn write_at(file: &std::fs::File, buf: &[u8], mut offset: u64) -> std::io::Result<()> {
+            use std::os::windows::fs::FileExt;
+            let mut written = 0;
+            while written < buf.len() {
+                match file.seek_write(&buf[written..], offset) {
+                    Ok(0) => {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::WriteZero,
+                            "failed to write whole buffer",
+                        ));
+                    }
+                    Ok(n) => {
+                        written += n;
+                        offset += n as u64;
+                    }
+                    Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                    Err(e) => return Err(e),
+                }
+            }
+            Ok(())
+        }
 
         let expected_len = piece.end - piece.start + 1;
 
@@ -753,7 +780,7 @@ impl SegmentedDownload {
             match reader.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
-                    file.write_all_at(&buf[..n], offset)
+                    write_at(file, &buf[..n], offset)
                         .map_err(|error| PieceAttemptFailure::Terminal(error.into()))?;
                     offset += n as u64;
                     if let Some(progress) = shared {
