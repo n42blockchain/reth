@@ -2,7 +2,6 @@
 
 use crate::root::ParallelStateRootError;
 use alloy_eip7928::BlockAccessList;
-use alloy_evm::block::StateChangeSource;
 use alloy_primitives::{keccak256, B256};
 use derive_more::derive::Deref;
 use reth_trie::{updates::TrieUpdates, HashedPostState, HashedStorage, MultiProofTargetsV2};
@@ -11,27 +10,16 @@ use std::sync::Arc;
 use tracing::trace;
 
 /// Source of state changes, either from EVM execution or from a Block Access List.
-#[derive(Clone, Copy)]
+///
+/// alloy-evm 0.36 dropped `StateChangeSource` from the `OnStateHook` callback, so
+/// the EVM variant no longer carries a per-transaction source (the downstream
+/// `StateUpdate(_, state)` consumer ignored it anyway).
+#[derive(Clone, Copy, Debug)]
 pub enum Source {
     /// State changes from EVM execution.
-    Evm(StateChangeSource),
+    Evm,
     /// State changes from Block Access List (EIP-7928).
     BlockAccessList,
-}
-
-impl std::fmt::Debug for Source {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Evm(source) => source.fmt(f),
-            Self::BlockAccessList => f.write_str("BlockAccessList"),
-        }
-    }
-}
-
-impl From<StateChangeSource> for Source {
-    fn from(source: StateChangeSource) -> Self {
-        Self::Evm(source)
-    }
 }
 
 /// Messages used internally by the multi proof task.
@@ -123,8 +111,8 @@ impl StateRootHandle {
     pub fn state_hook(&self) -> impl alloy_evm::block::OnStateHook {
         let sender = StateHookSender::new(self.updates_tx.clone());
 
-        move |source: StateChangeSource, state: &EvmState| {
-            let _ = sender.send(StateRootMessage::StateUpdate(source.into(), state.clone()));
+        move |state: &EvmState| {
+            let _ = sender.send(StateRootMessage::StateUpdate(Source::Evm, state.clone()));
         }
     }
 

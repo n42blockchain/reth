@@ -688,16 +688,22 @@ where
     where
         H: OnStateHook + 'static,
     {
-        let result = self
+        // alloy-evm 0.36 moved the state hook from an executor builder method
+        // (`with_state_hook`) to a db-level `set_state_hook`. Set it on the
+        // executor's db, run, then clear it on `self.db` (also on the error path).
+        let mut executor = self
             .strategy_factory
             .executor_for_block(&mut self.db, block)
-            .map_err(BlockExecutionError::other)?
-            .with_state_hook(Some(Box::new(state_hook)))
-            .execute_block(block.transactions_recovered())?;
+            .map_err(BlockExecutionError::other)?;
 
+        executor.evm_mut().db_mut().set_state_hook(Some(Box::new(state_hook)));
+
+        let result = executor.execute_block(block.transactions_recovered());
+
+        self.db.set_state_hook(None);
         self.db.merge_transitions(BundleRetention::Reverts);
 
-        Ok(result)
+        result
     }
 
     fn into_state(self) -> State<DB> {

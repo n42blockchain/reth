@@ -1186,7 +1186,10 @@ where
         let transaction_count = input.transaction_count();
         let (receipt_tx, result_rx) = self.spawn_receipt_root_task(transaction_count);
         let executed_tx_index = Arc::clone(handle.executed_tx_index());
-        let executor = executor.with_state_hook(
+        // alloy-evm 0.36: state hook moved from the executor builder
+        // (`with_state_hook`) to the db-level `set_state_hook`.
+        let mut executor = executor;
+        executor.evm_mut().db_mut().set_state_hook(
             handle.state_hook().map(|hook| Box::new(hook) as Box<dyn OnStateHook>),
         );
 
