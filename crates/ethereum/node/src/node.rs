@@ -13,9 +13,9 @@ use reth_ethereum_primitives::{EthPrimitives, TransactionSigned};
 use reth_evm::{
     eth::spec::EthExecutorSpec, ConfigureEvm, EvmFactory, EvmFactoryFor, NextBlockEnvAttributes,
 };
-use reth_evm_ethereum::factory::{
-    JitBackend, JitMode, RethEvmFactory, RevmcMetrics, RuntimeConfig, RuntimeTuning,
-};
+use reth_evm_ethereum::factory::{RethEvmFactory, RevmcMetrics};
+#[cfg(feature = "jit")]
+use reth_evm_ethereum::factory::{JitBackend, JitMode, RuntimeConfig, RuntimeTuning};
 use reth_network::{primitives::BasicNetworkPrimitives, NetworkHandle, PeersInfo};
 use reth_node_api::{
     AddOnsContext, FullNodeComponents, HeaderTy, NodeAddOns, NodePrimitives,
@@ -474,6 +474,7 @@ impl<N: FullNodeComponents<Types = Self>> DebugNode<N> for EthereumNode {
 }
 
 /// Builds a [`RuntimeConfig`] from CLI [`JitArgs`].
+#[cfg(feature = "jit")]
 fn jit_runtime_config(jit: &JitArgs) -> RuntimeConfig {
     let default_tuning = RuntimeTuning::default();
     let tuning = RuntimeTuning {
@@ -522,6 +523,7 @@ fn jit_runtime_config(jit: &JitArgs) -> RuntimeConfig {
 /// This is the shared setup used by both [`EthereumExecutorBuilder`] and `reth re-execute`.
 ///
 /// Returns the evm config and metrics recorder if JIT starts enabled.
+#[cfg(feature = "jit")]
 #[allow(clippy::type_complexity)]
 pub fn build_jit_evm_config<C: EthereumHardforks>(
     chain_spec: Arc<C>,
@@ -560,6 +562,19 @@ pub fn build_jit_evm_config<C: EthereumHardforks>(
     Ok((evm_config, Some(revmc_metrics)))
 }
 
+/// No-JIT variant: always builds the interpreter-only factory (the `jit`
+/// feature is off -- no LLVM toolchain, e.g. Windows). JIT CLI flags are
+/// accepted but inert.
+#[cfg(not(feature = "jit"))]
+#[allow(clippy::type_complexity)]
+pub fn build_jit_evm_config<C: EthereumHardforks>(
+    chain_spec: Arc<C>,
+    _jit: &JitArgs,
+    _dump_dir: Option<std::path::PathBuf>,
+) -> eyre::Result<(EthEvmConfig<C, RethEvmFactory>, Option<Arc<RevmcMetrics>>)> {
+    Ok((EthEvmConfig::new_with_evm_factory(chain_spec, RethEvmFactory::default()), None))
+}
+
 /// A regular ethereum evm and executor builder.
 ///
 /// Uses [`RethEvmFactory`].
@@ -583,6 +598,7 @@ where
 
         let (evm_config, revmc_metrics) = build_jit_evm_config(ctx.chain_spec(), jit, dump_dir)?;
 
+        #[cfg(feature = "jit")]
         if let Some(revmc_metrics) = revmc_metrics {
             let metrics_backend = evm_config.executor_factory.evm_factory().backend().clone();
             ctx.task_executor().spawn_with_graceful_shutdown_signal(|shutdown| async move {

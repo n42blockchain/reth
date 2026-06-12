@@ -545,7 +545,7 @@ where
             env.clone(),
             txs,
             provider_builder.clone(),
-            overlay_factory,
+            overlay_factory.clone(),
             &strategy,
             parallel_bal_execution,
         ));

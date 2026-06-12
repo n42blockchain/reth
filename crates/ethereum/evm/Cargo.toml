@@ -39,7 +39,7 @@ secp256k1.workspace = true
 alloy-genesis.workspace = true
 
 [features]
-default = ["std", "jit"]
+default = ["std"]  # n42: jit (revmc/LLVM 22) off by default -- no LLVM toolchain on Windows; enable with --features jit
 std = [
     "alloy-consensus/std",
     "alloy-eips/std",

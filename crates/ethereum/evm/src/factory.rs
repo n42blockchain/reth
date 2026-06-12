@@ -330,3 +330,22 @@ impl RevmcMetrics {
         self.jit_codegen_duration.record(event.timings.codegen.as_secs_f64());
     }
 }
+
+/// No-JIT stubs so downstream crates (node / cli / bin) compile without the
+/// `jit` feature -- i.e. without an LLVM 22 toolchain (Windows). JIT remains
+/// available behind `--features jit` on platforms with LLVM.
+#[cfg(not(feature = "jit"))]
+mod nojit_stubs {
+    /// Stub metrics recorder; never instantiated (`build_jit_evm_config`
+    /// always returns `None` without `jit`).
+    #[derive(Debug, Clone, Default)]
+    pub struct RevmcMetrics;
+
+    /// Without `jit` there is no helper-process mode; continue normal startup.
+    pub fn maybe_run_jit_helper()
+    -> Result<core::ops::ControlFlow<()>, core::convert::Infallible> {
+        Ok(core::ops::ControlFlow::Continue(()))
+    }
+}
+#[cfg(not(feature = "jit"))]
+pub use nojit_stubs::{RevmcMetrics, maybe_run_jit_helper};
