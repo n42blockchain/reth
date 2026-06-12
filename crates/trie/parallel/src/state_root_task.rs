@@ -9,26 +9,13 @@ use revm_state::EvmState;
 use std::sync::Arc;
 use tracing::trace;
 
-/// Source of state changes, either from EVM execution or from a Block Access List.
-///
-/// alloy-evm 0.36 dropped `StateChangeSource` from the `OnStateHook` callback, so
-/// the EVM variant no longer carries a per-transaction source (the downstream
-/// `StateUpdate(_, state)` consumer ignored it anyway).
-#[derive(Clone, Copy, Debug)]
-pub enum Source {
-    /// State changes from EVM execution.
-    Evm,
-    /// State changes from Block Access List (EIP-7928).
-    BlockAccessList,
-}
-
 /// Messages used internally by the multi proof task.
 #[derive(Debug)]
 pub enum StateRootMessage {
     /// Prefetch proof targets
     PrefetchProofs(MultiProofTargetsV2),
     /// New state update from transaction execution with its source
-    StateUpdate(Source, EvmState),
+    StateUpdate(EvmState),
     /// Pre-hashed state update from BAL conversion that can be applied directly without proofs.
     HashedStateUpdate(HashedPostState),
     /// Block Access List (EIP-7928; BAL) containing complete state changes for the block.
@@ -112,7 +99,7 @@ impl StateRootHandle {
         let sender = StateHookSender::new(self.updates_tx.clone());
 
         move |state: &EvmState| {
-            let _ = sender.send(StateRootMessage::StateUpdate(Source::Evm, state.clone()));
+            let _ = sender.send(StateRootMessage::StateUpdate(state.clone()));
         }
     }
 

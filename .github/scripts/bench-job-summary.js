@@ -7,14 +7,23 @@
 //   BENCH_CORES          – CPU core limit (0 = all)
 //   BENCH_WARMUP_BLOCKS  – Number of warmup blocks
 //   BENCH_SAMPLY         – 'true' if samply profiling was enabled
+//   BENCH_TRACING_CHROME – 'true' if Chrome trace recording was enabled
 //   BENCH_RUN_PAIRS      – Number of configured benchmark run pairs
 //
 // Usage from actions/github-script:
 //   const jobSummary = require('./.github/scripts/bench-job-summary.js');
-//   await jobSummary({ core, context, chartSha, grafanaUrl, runId });
+//   await jobSummary({ core, context, chartSha, grafanaUrl, logsUrl, tracesUrl, runId });
 
 const fs = require('fs');
-const { verdict, loadSamplyUrls, blocksLabel, metricRows, waitTimeRows, fmtChange } = require('./bench-utils');
+const {
+  verdict,
+  loadSamplyUrls,
+  loadTracingChromeUrls,
+  blocksLabel,
+  metricRows,
+  waitTimeRows,
+  fmtChange,
+} = require('./bench-utils');
 
 function fmtMetricValue(v) {
   if (v === null || v === undefined || !Number.isFinite(v)) return 'n/a';
@@ -30,7 +39,7 @@ function fmtTargetMetricValue(metric, v) {
   return fmtMetricValue(v);
 }
 
-module.exports = async function ({ core, context, chartSha, grafanaUrl, runId }) {
+module.exports = async function ({ core, context, chartSha, grafanaUrl, logsUrl, tracesUrl, runId }) {
   let summary;
   try {
     summary = JSON.parse(fs.readFileSync(process.env.BENCH_WORK_DIR + '/summary.json', 'utf8'));
@@ -45,6 +54,10 @@ module.exports = async function ({ core, context, chartSha, grafanaUrl, runId })
   const commitUrl = `https://github.com/${repo}/commit`;
 
   const { emoji, label } = verdict(summary.changes);
+  const observability = summary.observability || {};
+  const resolvedGrafanaUrl = grafanaUrl || observability.grafana_url;
+  const resolvedLogsUrl = logsUrl || observability.logs_url;
+  const resolvedTracesUrl = tracesUrl || observability.traces_url;
   const baselineLink = `[\`${summary.baseline.name}\`](${commitUrl}/${summary.baseline.ref})`;
   const featureLink = `[\`${summary.feature.name}\`](${commitUrl}/${summary.feature.ref})`;
   const diffUrl = `https://github.com/${repo}/compare/${summary.baseline.ref}...${summary.feature.ref}`;
@@ -122,9 +135,20 @@ module.exports = async function ({ core, context, chartSha, grafanaUrl, runId })
     md += `### Samply Profiles\n\n${samplyLinks.join('\n')}\n\n`;
   }
 
-  // Grafana
-  if (grafanaUrl) {
-    md += `### Grafana Dashboard\n\n[View real-time metrics](${grafanaUrl})\n\n`;
+  const tracingChromeUrls = loadTracingChromeUrls(process.env.BENCH_WORK_DIR);
+  const tracingChromeLinks = Object.entries(tracingChromeUrls)
+    .map(([run, url]) => `- **${run}**: [Perfetto](${url})`);
+  if (tracingChromeLinks.length > 0) {
+    md += `### Chrome Traces\n\n${tracingChromeLinks.join('\n')}\n\n`;
+  }
+
+  // Observability
+  const observabilityLinks = [];
+  if (resolvedGrafanaUrl) observabilityLinks.push(`- [Grafana Dashboard](${resolvedGrafanaUrl})`);
+  if (resolvedLogsUrl) observabilityLinks.push(`- [Logs](${resolvedLogsUrl})`);
+  if (resolvedTracesUrl) observabilityLinks.push(`- [Traces](${resolvedTracesUrl})`);
+  if (observabilityLinks.length > 0) {
+    md += `### Observability\n\n${observabilityLinks.join('\n')}\n\n`;
   }
 
   // Node errors

@@ -166,7 +166,7 @@ where
         cancel,
         best_payload,
     } = args;
-    let PayloadConfig { parent_header, attributes, payload_id } = config;
+    let PayloadConfig { parent_header, attributes, payload_id, .. } = config;
 
     let mut state_provider = client.state_by_block_hash(parent_header.hash())?;
     if let Some(execution_cache) = execution_cache {
@@ -187,6 +187,7 @@ where
         .with_bal_builder_if(is_amsterdam)
         .build();
 
+    let evm_config = evm_config.with_jit_support();
     let mut builder = evm_config
         .builder_for_next_block(
             &mut db,
@@ -195,10 +196,11 @@ where
                 timestamp: attributes.timestamp(),
                 suggested_fee_recipient: attributes.suggested_fee_recipient,
                 prev_randao: attributes.prev_randao,
-                gas_limit: builder_config.gas_limit(parent_header.gas_limit),
+                gas_limit: builder_config
+                    .gas_limit_with_target(parent_header.gas_limit, attributes.target_gas_limit()),
                 parent_beacon_block_root: attributes.parent_beacon_block_root(),
                 withdrawals: attributes.withdrawals.clone().map(Into::into),
-                extra_data: builder_config.extra_data,
+                extra_data: builder_config.extra_data.clone(),
                 slot_number: attributes.slot_number(),
             },
         )
@@ -221,11 +223,7 @@ where
     // If we have a sparse trie handle, wire a state hook that streams per-tx state diffs
     // to the background trie pipeline for incremental state root computation.
     if let Some(ref handle) = trie_handle {
-        builder
-            .executor_mut()
-            .evm_mut()
-            .db_mut()
-            .set_state_hook(Some(Box::new(handle.state_hook())));
+        builder.evm_mut().db_mut().set_state_hook(Some(Box::new(handle.state_hook())));
     }
 
     builder.apply_pre_execution_changes().map_err(|err| {
@@ -533,7 +531,7 @@ where
     {
         // Drop the state hook, which drops the StateHookSender and triggers
         // FinishedStateUpdates via its Drop impl, signaling the trie task to finalize.
-        builder.executor_mut().evm_mut().db_mut().set_state_hook(None);
+        builder.evm_mut().db_mut().set_state_hook(None);
 
         // The sparse trie has been computing incrementally alongside tx execution.
         // This recv() waits for the final root hash — most work is already done.
