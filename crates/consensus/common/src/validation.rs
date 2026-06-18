@@ -109,7 +109,20 @@ where
         ))
     }
 
-    let tx_root = body.calculate_tx_root();
+    let tx_root = {
+        #[cfg(feature = "std")]
+        {
+            if crate::n42_blake3_roots::enabled() {
+                crate::n42_blake3_roots::calculate_transaction_root(body.transactions())
+            } else {
+                body.calculate_tx_root()
+            }
+        }
+        #[cfg(not(feature = "std"))]
+        {
+            body.calculate_tx_root()
+        }
+    };
     if header.transactions_root() != tx_root {
         return Err(ConsensusError::BodyTransactionRootDiff(
             GotExpected { got: tx_root, expected: header.transactions_root() }.into(),
@@ -171,8 +184,20 @@ where
 
     // Check transaction root
     let expected_transaction_root = block.header().transactions_root();
-    let calculated_transaction_root =
-        transaction_root.unwrap_or_else(|| block.body().calculate_tx_root());
+    let calculated_transaction_root = {
+        #[cfg(feature = "std")]
+        {
+            if crate::n42_blake3_roots::enabled() {
+                crate::n42_blake3_roots::calculate_transaction_root(block.body().transactions())
+            } else {
+                transaction_root.unwrap_or_else(|| block.body().calculate_tx_root())
+            }
+        }
+        #[cfg(not(feature = "std"))]
+        {
+            transaction_root.unwrap_or_else(|| block.body().calculate_tx_root())
+        }
+    };
     if calculated_transaction_root != expected_transaction_root {
         return Err(ConsensusError::BodyTransactionRootDiff(
             GotExpected { got: calculated_transaction_root, expected: expected_transaction_root }

@@ -72,6 +72,107 @@ pub fn n42_defer_state_root() -> bool {
     static DEFER: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *DEFER.get_or_init(|| std::env::var("N42_DEFER_STATE_ROOT").map_or(false, |v| v == "1"))
 }
+
+/// Returns true if the N42 benchmark BLAKE3 block-root prototype is enabled.
+#[cfg(feature = "std")]
+pub fn n42_blake3_block_hash() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var("N42_BLAKE3_BLOCK_HASH").is_ok_and(|v| v == "1"))
+}
+
+#[cfg(feature = "std")]
+fn n42_blake3_b256(hash: blake3::Hash) -> B256 {
+    B256::from_slice(hash.as_bytes())
+}
+
+#[cfg(feature = "std")]
+fn n42_blake3_leaf(domain: &[u8], index: usize, bytes: &[u8]) -> B256 {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"n42-blake3-state-root-v1");
+    hasher.update(domain);
+    hasher.update(&(index as u64).to_le_bytes());
+    hasher.update(&(bytes.len() as u64).to_le_bytes());
+    hasher.update(bytes);
+    n42_blake3_b256(hasher.finalize())
+}
+
+#[cfg(feature = "std")]
+fn n42_blake3_pair(left: B256, right: B256) -> B256 {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"n42-blake3-state-root-v1");
+    hasher.update(b"node");
+    hasher.update(left.as_slice());
+    hasher.update(right.as_slice());
+    n42_blake3_b256(hasher.finalize())
+}
+
+/// Benchmark-only state commitment over the block's hashed post-state.
+///
+/// This is intentionally a post-state-diff commitment, not Ethereum's full MPT
+/// state root. It exists only to quantify the serial root bottleneck when all
+/// nodes run the same fresh-genesis benchmark flag.
+#[cfg(feature = "std")]
+pub fn n42_blake3_state_root(state: &reth_trie_common::HashedPostState) -> B256 {
+    use alloc::vec::Vec;
+
+    let mut leaves = Vec::with_capacity(state.accounts.len() + state.storages.len());
+    let mut buf = Vec::with_capacity(160);
+
+    let mut accounts = state.accounts.iter().collect::<Vec<_>>();
+    accounts.sort_unstable_by_key(|(address, _)| **address);
+    for (idx, (address, account)) in accounts.into_iter().enumerate() {
+        buf.clear();
+        buf.extend_from_slice(address.as_slice());
+        match account {
+            Some(account) => {
+                buf.push(1);
+                buf.extend_from_slice(&account.nonce.to_le_bytes());
+                buf.extend_from_slice(&account.balance.to_be_bytes::<32>());
+                if let Some(bytecode_hash) = account.bytecode_hash {
+                    buf.push(1);
+                    buf.extend_from_slice(bytecode_hash.as_slice());
+                } else {
+                    buf.push(0);
+                }
+            }
+            None => buf.push(0),
+        }
+        leaves.push(n42_blake3_leaf(b"account", idx, &buf));
+    }
+
+    let mut storages = state.storages.iter().collect::<Vec<_>>();
+    storages.sort_unstable_by_key(|(address, _)| **address);
+    for (storage_idx, (address, storage)) in storages.into_iter().enumerate() {
+        let mut slots = storage.storage.iter().collect::<Vec<_>>();
+        slots.sort_unstable_by_key(|(slot, _)| **slot);
+
+        buf.clear();
+        buf.extend_from_slice(address.as_slice());
+        buf.push(u8::from(storage.wiped));
+        buf.extend_from_slice(&(slots.len() as u64).to_le_bytes());
+        for (slot, value) in slots {
+            buf.extend_from_slice(slot.as_slice());
+            buf.extend_from_slice(&value.to_be_bytes::<32>());
+        }
+        leaves.push(n42_blake3_leaf(b"storage", storage_idx, &buf));
+    }
+
+    if leaves.is_empty() {
+        return n42_blake3_leaf(b"empty", 0, &[]);
+    }
+
+    while leaves.len() > 1 {
+        let mut next = Vec::with_capacity(leaves.len().div_ceil(2));
+        for pair in leaves.chunks(2) {
+            let left = pair[0];
+            let right = pair.get(1).copied().unwrap_or(left);
+            next.push(n42_blake3_pair(left, right));
+        }
+        leaves = next;
+    }
+
+    leaves[0]
+}
 #[cfg(any(test, feature = "test-utils"))]
 /// test helpers for mocking executor
 pub mod test_utils;

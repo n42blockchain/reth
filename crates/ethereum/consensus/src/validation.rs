@@ -132,6 +132,18 @@ fn verify_receipts<R: Receipt>(
     expected_logs_bloom: Bloom,
     receipts: &[R],
 ) -> Result<(), ConsensusError> {
+    #[cfg(feature = "std")]
+    if reth_consensus_common::n42_blake3_roots::enabled() {
+        let (receipts_root, logs_bloom) =
+            reth_consensus_common::n42_blake3_roots::calculate_receipt_root_and_bloom(receipts);
+        return compare_receipts_root_and_logs_bloom(
+            receipts_root,
+            logs_bloom,
+            expected_receipts_root,
+            expected_logs_bloom,
+        );
+    }
+
     // Calculate receipts root.
     let receipts_with_bloom = receipts.iter().map(TxReceipt::with_bloom_ref).collect::<Vec<_>>();
     let receipts_root = calculate_receipt_root(&receipts_with_bloom);

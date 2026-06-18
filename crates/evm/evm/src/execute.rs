@@ -534,6 +534,11 @@ where
         let n42_skip = false;
 
         let mut state_root_ms = 0u64;
+        #[cfg(feature = "std")]
+        let n42_blake3_roots = crate::n42_blake3_block_hash();
+        #[cfg(not(feature = "std"))]
+        let n42_blake3_roots = false;
+
         let (state_root, trie_updates) = if n42_skip {
             #[cfg(feature = "std")]
             {
@@ -545,6 +550,20 @@ where
                 );
             }
             (alloy_primitives::B256::ZERO, Default::default())
+        } else if n42_blake3_roots {
+            let root_start = std::time::Instant::now();
+            #[cfg(feature = "std")]
+            let root = crate::n42_blake3_state_root(&hashed_state);
+            #[cfg(not(feature = "std"))]
+            let root = alloy_primitives::B256::ZERO;
+            state_root_ms = root_start.elapsed().as_millis() as u64;
+            tracing::info!(
+                target: "evm::execute",
+                ?root,
+                state_root_ms,
+                "N42_BLAKE3_STATE_ROOT: using benchmark post-state BLAKE3 commitment"
+            );
+            (root, Default::default())
         } else if let Some(precomputed) = state_root_precomputed {
             precomputed
         } else {
@@ -587,6 +606,7 @@ where
             assemble_block_ms,
             total_finish_ms = finish_start.elapsed().as_millis() as u64,
             skipped_state_root = n42_skip,
+            n42_blake3_roots,
             trie_account_nodes = trie_updates.account_nodes.len(),
             trie_removed_nodes = trie_updates.removed_nodes.len(),
             trie_storage_tries = trie_updates.storage_tries.len(),

@@ -9,7 +9,7 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 use alloy_consensus::Transaction;
-use alloy_primitives::{Bytes, U256};
+use alloy_primitives::{Bytes, B256, U256};
 use alloy_rlp::Encodable;
 use alloy_rpc_types_engine::PayloadAttributes as EthPayloadAttributes;
 use reth_basic_payload_builder::{
@@ -47,6 +47,18 @@ pub use config::*;
 
 pub mod validator;
 pub use validator::EthereumExecutionPayloadValidator;
+
+fn n42_payload_hash(hash: B256) -> B256 {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if !*ENABLED.get_or_init(|| std::env::var("N42_BLAKE3_BLOCK_HASH").is_ok_and(|v| v == "1")) {
+        return hash;
+    }
+
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"n42-blake3-payload-hash-v1");
+    hasher.update(hash.as_slice());
+    B256::from_slice(hasher.finalize().as_bytes())
+}
 
 type BestTransactionsIter<Pool> = Box<
     dyn BestTransactions<Item = Arc<ValidPoolTransaction<<Pool as TransactionPool>::Transaction>>>,
@@ -563,7 +575,7 @@ where
     // so we must not consume it via into_sealed_block().
     {
         let bundle_state = db.take_bundle();
-        let block_hash = block.hash();
+        let block_hash = n42_payload_hash(block.hash());
         let senders = block.senders().to_vec();
         let execution_output = BlockExecutionOutput {
             state: bundle_state,

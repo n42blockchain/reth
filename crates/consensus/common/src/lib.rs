@@ -11,3 +11,7 @@
 
 /// Collection of consensus validation methods.
 pub mod validation;
+
+/// N42 benchmark-only BLAKE3 root prototype.
+#[cfg(feature = "std")]
+pub mod n42_blake3_roots;

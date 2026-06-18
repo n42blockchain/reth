@@ -41,4 +41,5 @@ alloy-consensus.workspace = true
 alloy-primitives.workspace = true
 
 # misc
+blake3.workspace = true
 tracing.workspace = true

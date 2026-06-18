@@ -6,7 +6,7 @@ use alloy_eips::{
     eip7594::{BlobTransactionSidecarEip7594, BlobTransactionSidecarVariant},
     eip7685::Requests,
 };
-use alloy_primitives::{Bytes, U256};
+use alloy_primitives::{Bytes, B256, U256};
 use alloy_rpc_types_engine::{
     BlobsBundleV1, BlobsBundleV2, CancunPayloadFields, ExecutionData, ExecutionPayload,
     ExecutionPayloadEnvelopeV2, ExecutionPayloadEnvelopeV3, ExecutionPayloadEnvelopeV4,
@@ -19,6 +19,28 @@ use reth_payload_primitives::BuiltPayload;
 use reth_primitives_traits::{NodePrimitives, RecoveredBlock, SealedBlock};
 
 use crate::BuiltPayloadConversionError;
+
+#[cfg(feature = "std")]
+fn n42_payload_hash(hash: B256) -> B256 {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if !*ENABLED.get_or_init(|| std::env::var("N42_BLAKE3_BLOCK_HASH").is_ok_and(|v| v == "1")) {
+        return hash;
+    }
+
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"n42-blake3-payload-hash-v1");
+    hasher.update(hash.as_slice());
+    B256::from_slice(hasher.finalize().as_bytes())
+}
+
+#[cfg(not(feature = "std"))]
+fn n42_payload_hash(hash: B256) -> B256 {
+    hash
+}
+
+fn n42_payload_block_hash<B: reth_primitives_traits::Block>(block: &SealedBlock<B>) -> B256 {
+    n42_payload_hash(block.hash())
+}
 
 /// Contains the built payload.
 ///
@@ -111,7 +133,7 @@ impl EthBuiltPayload {
 
         Ok(ExecutionPayloadEnvelopeV3 {
             execution_payload: ExecutionPayloadV3::from_block_unchecked(
-                block.hash(),
+                n42_payload_block_hash(block.sealed_block()),
                 &Arc::unwrap_or_clone(block).into_block(),
             ),
             block_value: fees,
@@ -152,7 +174,7 @@ impl EthBuiltPayload {
 
         Ok(ExecutionPayloadEnvelopeV5 {
             execution_payload: ExecutionPayloadV3::from_block_unchecked(
-                block.hash(),
+                n42_payload_block_hash(block.sealed_block()),
                 &Arc::unwrap_or_clone(block).into_block(),
             ),
             block_value: fees,
@@ -188,7 +210,7 @@ impl EthBuiltPayload {
         };
         Ok(ExecutionPayloadEnvelopeV6 {
             execution_payload: ExecutionPayloadV4::from_block_unchecked_with_bal(
-                block.hash(),
+                n42_payload_block_hash(block.sealed_block()),
                 &Arc::unwrap_or_clone(block).into_block(),
                 block_access_list,
             ),
@@ -210,7 +232,7 @@ impl EthBuiltPayload {
     /// Converts built payload into [`ExecutionData`].
     pub fn into_execution_data(self) -> ExecutionData {
         let Self { block, requests, block_access_list, .. } = self;
-        let block_hash = block.hash();
+        let block_hash = n42_payload_block_hash(block.sealed_block());
         let block = Arc::unwrap_or_clone(block).into_block();
 
         let (payload, sidecar) = ExecutionPayload::from_block_unchecked_with_extras(
@@ -265,7 +287,7 @@ impl<N: NodePrimitives> BuiltPayload for EthBuiltPayload<N> {
 impl From<EthBuiltPayload> for ExecutionPayloadV1 {
     fn from(value: EthBuiltPayload) -> Self {
         Self::from_block_unchecked(
-            value.block().hash(),
+            n42_payload_block_hash(value.block()),
             &Arc::unwrap_or_clone(value.block).into_block(),
         )
     }
@@ -279,7 +301,7 @@ impl From<EthBuiltPayload> for ExecutionPayloadEnvelopeV2 {
         Self {
             block_value: fees,
             execution_payload: ExecutionPayloadFieldV2::from_block_unchecked(
-                block.hash(),
+                n42_payload_block_hash(block.sealed_block()),
                 &Arc::unwrap_or_clone(block).into_block(),
             ),
         }

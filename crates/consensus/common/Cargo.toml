@@ -20,6 +20,7 @@ reth-primitives-traits.workspace = true
 alloy-consensus.workspace = true
 alloy-eips.workspace = true
 alloy-primitives.workspace = true
+blake3 = { workspace = true, optional = true }
 
 [dev-dependencies]
 alloy-primitives = { workspace = true, features = ["rand"] }
@@ -36,4 +37,5 @@ std = [
     "reth-primitives-traits/std",
     "reth-ethereum-primitives/std",
     "alloy-primitives/std",
+    "dep:blake3",
 ]

@@ -28,6 +28,7 @@ alloy-eip7928.workspace = true
 alloy-eips.workspace = true
 alloy-evm.workspace = true
 alloy-consensus.workspace = true
+blake3 = { workspace = true, optional = true }
 
 tracing.workspace = true
 auto_impl.workspace = true
@@ -58,6 +59,7 @@ std = [
     "reth-trie-common/std",
     "reth-ethereum-primitives/std",
     "alloy-eip7928/std",
+    "dep:blake3",
 ]
 metrics = ["std", "dep:metrics", "dep:reth-metrics"]
 test-utils = [

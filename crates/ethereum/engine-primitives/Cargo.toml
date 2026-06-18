@@ -21,6 +21,7 @@ reth-payload-primitives.workspace = true
 alloy-primitives.workspace = true
 alloy-eips.workspace = true
 alloy-rpc-types-engine.workspace = true
+blake3 = { workspace = true, optional = true }
 
 # misc
 serde.workspace = true
@@ -41,4 +42,5 @@ std = [
     "thiserror/std",
     "reth-engine-primitives/std",
     "reth-primitives-traits/std",
+    "dep:blake3",
 ]

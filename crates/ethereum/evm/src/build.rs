@@ -56,13 +56,38 @@ impl<ChainSpec: EthChainSpec + EthereumHardforks> EthBlockAssembler<ChainSpec> {
 
         let timestamp = evm_env.block_env.timestamp().saturating_to();
 
-        let transactions_root =
-            transactions_root.unwrap_or_else(|| proofs::calculate_transaction_root(&transactions));
-        let receipts_root = receipts_root.unwrap_or_else(|| {
-            calculate_receipt_root(&receipts.iter().map(|r| r.with_bloom_ref()).collect::<Vec<_>>())
+        let n42_blake3_roots = reth_consensus_common::n42_blake3_roots::enabled();
+        let transactions_root = transactions_root.unwrap_or_else(|| {
+            if n42_blake3_roots {
+                reth_consensus_common::n42_blake3_roots::calculate_transaction_root(&transactions)
+            } else {
+                proofs::calculate_transaction_root(&transactions)
+            }
         });
-        let logs_bloom = logs_bloom
-            .unwrap_or_else(|| calculate_logs_bloom(receipts.iter().flat_map(|r| r.logs())));
+        let (receipts_root, logs_bloom) = match (receipts_root, logs_bloom) {
+            (Some(receipts_root), Some(logs_bloom)) => (receipts_root, logs_bloom),
+            (maybe_receipts_root, maybe_logs_bloom) if n42_blake3_roots => {
+                let (calculated_receipts_root, calculated_logs_bloom) =
+                    reth_consensus_common::n42_blake3_roots::calculate_receipt_root_and_bloom(
+                        receipts,
+                    );
+                (
+                    maybe_receipts_root.unwrap_or(calculated_receipts_root),
+                    maybe_logs_bloom.unwrap_or(calculated_logs_bloom),
+                )
+            }
+            (maybe_receipts_root, maybe_logs_bloom) => {
+                let calculated_receipts_root = maybe_receipts_root.unwrap_or_else(|| {
+                    calculate_receipt_root(
+                        &receipts.iter().map(|r| r.with_bloom_ref()).collect::<Vec<_>>(),
+                    )
+                });
+                let calculated_logs_bloom = maybe_logs_bloom.unwrap_or_else(|| {
+                    calculate_logs_bloom(receipts.iter().flat_map(|r| r.logs()))
+                });
+                (calculated_receipts_root, calculated_logs_bloom)
+            }
+        };
 
         let withdrawals = self
             .chain_spec

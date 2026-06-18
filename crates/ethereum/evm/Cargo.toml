@@ -13,6 +13,7 @@ workspace = true
 [dependencies]
 # Reth
 reth-execution-types.workspace = true
+reth-consensus-common.workspace = true
 reth-chainspec.workspace = true
 reth-ethereum-forks.workspace = true
 reth-primitives-traits.workspace = true
@@ -50,6 +51,7 @@ std = [
     "reth-chainspec/std",
     "alloy-evm/std",
     "reth-execution-types/std",
+    "reth-consensus-common/std",
     "reth-evm/std",
     "reth-primitives-traits/std",
     "revm/std",

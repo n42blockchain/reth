@@ -4,7 +4,7 @@ use alloy_consensus::Block;
 use alloy_rpc_types_engine::{ExecutionData, PayloadError};
 use reth_chainspec::EthereumHardforks;
 use reth_payload_validator::{cancun, prague, shanghai};
-use reth_primitives_traits::{Block as _, SealedBlock, SignedTransaction};
+use reth_primitives_traits::{SealedBlock, SignedTransaction};
 use std::sync::Arc;
 
 /// Execution payload validator.
@@ -75,15 +75,34 @@ where
 
     let expected_hash = payload.block_hash();
 
-    // First parse the block
-    let sealed_block = payload.try_into_block_with_sidecar(&sidecar)?.seal_slow();
+    // First parse the block.
+    let mut block = payload.try_into_block_with_sidecar(&sidecar)?;
+    if reth_consensus_common::n42_blake3_roots::enabled() {
+        block.header.transactions_root =
+            reth_consensus_common::n42_blake3_roots::calculate_transaction_root(
+                &block.body.transactions,
+            );
+    }
+    let mut sealed_block = SealedBlock::seal_slow(block);
 
     // Ensure the hash included in the payload matches the block hash
     if expected_hash != sealed_block.hash() {
-        return Err(PayloadError::BlockHash {
-            execution: sealed_block.hash(),
-            consensus: expected_hash,
-        })
+        if reth_consensus_common::n42_blake3_roots::enabled() {
+            let execution_hash = sealed_block.hash();
+            let (block, _) = sealed_block.split();
+            sealed_block = SealedBlock::new_unchecked(block, expected_hash);
+            tracing::warn!(
+                target: "payload_validator",
+                ?execution_hash,
+                consensus_hash = ?expected_hash,
+                "N42_BLAKE3_BLOCK_HASH accepting Engine payload hash as prototype seal"
+            );
+        } else {
+            return Err(PayloadError::BlockHash {
+                execution: sealed_block.hash(),
+                consensus: expected_hash,
+            })
+        }
     }
 
     shanghai::ensure_well_formed_fields(

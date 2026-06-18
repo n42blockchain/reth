@@ -509,7 +509,9 @@ where
         // Force Synchronous on skip/defer state root: StateRootTask spawns 20 proof worker
         // threads per block, but the result is discarded when state root is skipped/deferred.
         // On single-machine testnets this causes thread storms (30K+ thread spawns).
-        let n42_skip_root = reth_evm::n42_skip_state_root() || reth_evm::n42_defer_state_root();
+        let n42_skip_root = reth_evm::n42_skip_state_root()
+            || reth_evm::n42_defer_state_root()
+            || reth_evm::n42_blake3_block_hash();
         let strategy = if is_cache_hit || n42_skip_root {
             StateRootStrategy::Synchronous
         } else {
@@ -676,9 +678,12 @@ where
         let valid_block_tx = handle.terminate_caching(Some(output.clone()));
 
         // N42: check whether state root can be skipped BEFORE expensive post-execution work.
-        let n42_skip_root = reth_evm::n42_skip_state_root() || reth_evm::n42_defer_state_root();
+        let n42_skip_root = reth_evm::n42_skip_state_root()
+            || reth_evm::n42_defer_state_root()
+            || reth_evm::n42_blake3_block_hash();
 
-        // N42 fast path: cache hit + skip/defer state root → skip ALL expensive post-validation.
+        // N42 fast path: cache hit + skip/defer/BLAKE3 prototype state root → skip ALL expensive
+        // post-validation.
         // The leader already validated this block. Skip convert_to_block (90K tx RLP decode) and
         // validate_post_execution. This reduces follower new_payload from ~1000ms to ~10ms.
         if is_cache_hit && n42_skip_root {
@@ -689,7 +694,13 @@ where
             }
 
             let trie_output = TrieUpdates::default();
-            let mode = if reth_evm::n42_skip_state_root() { "SKIP" } else { "DEFER" };
+            let mode = if reth_evm::n42_blake3_block_hash() {
+                "BLAKE3"
+            } else if reth_evm::n42_skip_state_root() {
+                "SKIP"
+            } else {
+                "DEFER"
+            };
             info!(
                 target: "engine::tree::payload_validator",
                 block_number = block.header().number(),
@@ -745,7 +756,9 @@ where
         let block = block.with_senders(senders);
 
         // Wait for the receipt root computation to complete.
-        let receipt_root_bloom = {
+        let receipt_root_bloom = if reth_consensus_common::n42_blake3_roots::enabled() {
+            None
+        } else {
             let _enter = debug_span!(
                 target: "engine::tree::payload_validator",
                 "wait_receipt_root",
@@ -795,13 +808,20 @@ where
         // - SKIP mode: permanently skip, no async verification (benchmark only)
         // - DEFER mode: skip on critical path, async verification after consensus commit
         //   Sentinel: block.header().state_root() == B256::ZERO means leader deferred
-        let n42_skip_root = reth_evm::n42_skip_state_root()
+        let n42_skip_root = reth_evm::n42_blake3_block_hash()
+            || reth_evm::n42_skip_state_root()
             || (reth_evm::n42_defer_state_root() && block.header().state_root() == B256::ZERO);
         #[cfg(feature = "trie-debug")]
         let mut trie_debug_recorders = Vec::new();
 
         let (state_root, trie_output, root_elapsed) = if n42_skip_root {
-            let mode = if reth_evm::n42_skip_state_root() { "SKIP" } else { "DEFER" };
+            let mode = if reth_evm::n42_blake3_block_hash() {
+                "BLAKE3"
+            } else if reth_evm::n42_skip_state_root() {
+                "SKIP"
+            } else {
+                "DEFER"
+            };
             info!(
                 target: "engine::tree::payload_validator",
                 block_number = block.header().number(),
