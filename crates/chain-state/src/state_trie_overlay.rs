@@ -153,7 +153,7 @@ impl<N: NodePrimitives> StateTrieOverlayManager<N> {
                 worker_pool.spawn(move || {
                     let _span = tracing::trace_span!(
                         target: "chain_state::state_trie_overlay",
-                        parent: parent_span,
+                        parent: &parent_span,
                         "precompute_state_trie_overlay",
                         tip_hash = %hash,
                         anchor_hash = %anchor_hash,

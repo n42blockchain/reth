@@ -1074,7 +1074,7 @@ where
         self.payload_processor.executor().spawn_blocking_named("payload-convert", move || {
             let _span = debug_span!(
                 target: "engine::tree::payload_validator",
-                parent: parent_span,
+                parent: &parent_span,
                 "convert_and_validate",
             )
             .entered();
@@ -1125,7 +1125,7 @@ where
             move || {
                 let _span = debug_span!(
                     target: "engine::tree::payload_validator",
-                    parent: parent_span,
+                    parent: &parent_span,
                     "changeset_provider",
                 )
                 .entered();

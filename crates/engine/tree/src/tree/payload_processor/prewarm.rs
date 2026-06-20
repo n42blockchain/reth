@@ -168,7 +168,7 @@ where
                     s.spawn(move |_| {
                         let _enter = trace_span!(
                             target: "engine::tree::payload_processor::prewarm",
-                            parent: parent_span,
+                            parent: &parent_span,
                             "prewarm_tx",
                             i = index,
                         )
