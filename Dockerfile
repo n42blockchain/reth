@@ -1,6 +1,8 @@
 # syntax=docker.io/docker/dockerfile:1.7-labs
 
-FROM lukemathwalker/cargo-chef:latest-rust-1.95-trixie AS chef
+FROM rust:1.97.0-trixie AS chef
+# Install cargo-chef on the pinned official Rust image so its bundled compiler cannot lag MSRV.
+RUN cargo install cargo-chef --version 0.1.77 --locked
 WORKDIR /app
 
 LABEL org.opencontainers.image.source=https://github.com/paradigmxyz/reth
