@@ -345,10 +345,10 @@ mod nojit_stubs {
     pub struct RevmcMetrics;
 
     /// Without `jit` there is no helper-process mode; continue normal startup.
-    pub fn maybe_run_jit_helper()
-    -> Result<core::ops::ControlFlow<()>, core::convert::Infallible> {
+    pub const fn maybe_run_jit_helper(
+    ) -> Result<core::ops::ControlFlow<()>, core::convert::Infallible> {
         Ok(core::ops::ControlFlow::Continue(()))
     }
 }
 #[cfg(not(feature = "jit"))]
-pub use nojit_stubs::{RevmcMetrics, maybe_run_jit_helper};
+pub use nojit_stubs::{maybe_run_jit_helper, RevmcMetrics};

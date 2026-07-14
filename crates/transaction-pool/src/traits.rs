@@ -748,6 +748,14 @@ pub trait TransactionPool: Clone + Debug + Send + Sync {
         indices_bitarray: B128,
     ) -> Result<Vec<Option<BlobCellsAndProofsV1>>, BlobStoreError>;
 
+    /// Return whether each requested blob versioned hash is available.
+    ///
+    /// The response is always the same length and order as the request.
+    fn has_blobs_for_versioned_hashes(
+        &self,
+        versioned_hashes: &[B256],
+    ) -> Result<Vec<bool>, BlobStoreError>;
+
     /// Returns the blob store used by the pool.
     fn blob_store(&self) -> Box<dyn BlobStore>;
 }
@@ -1359,6 +1367,14 @@ pub trait PoolTransaction:
     /// Define a method to convert from the `Pooled` type to `Self`
     fn from_pooled(pooled: Recovered<Self::Pooled>) -> Self;
 
+    /// Recovers and converts a pooled transaction into this pool transaction type.
+    ///
+    /// Implementations can override this to combine signature recovery with construction of
+    /// transaction-specific cached metadata.
+    fn try_recover(pooled: Self::Pooled) -> Result<Self, Self::Pooled> {
+        pooled.try_into_recovered().map(Self::from_pooled)
+    }
+
     /// Decodes and recovers a raw transaction into this pool transaction type.
     ///
     /// Implementations can override this to avoid constructing the pooled transaction as an
@@ -1371,9 +1387,7 @@ pub trait PoolTransaction:
         let transaction = Self::Pooled::decode_2718_exact(data)
             .map_err(|_| RawPoolTransactionError::FailedToDecodeSignedTransaction)?;
 
-        transaction
-            .try_into_recovered()
-            .map(Self::from_pooled)
+        Self::try_recover(transaction)
             .map_err(|_| RawPoolTransactionError::InvalidTransactionSignature)
     }
 
