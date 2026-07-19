@@ -804,7 +804,6 @@ where
                 output,
                 hashed_state,
                 Arc::new(trie_output),
-                None,
             );
 
             return Ok(ValidationOutput::new(executed_block, None));
