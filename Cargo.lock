@@ -3816,21 +3816,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "example-precompile-cache"
-version = "0.0.0"
-dependencies = [
- "alloy-evm",
- "alloy-genesis",
- "alloy-primitives",
- "eyre",
- "parking_lot",
- "reth-ethereum",
- "reth-tracing",
- "schnellru",
- "tokio",
-]
-
-[[package]]
 name = "example-rpc-db"
 version = "0.0.0"
 dependencies = [
@@ -8393,6 +8378,7 @@ dependencies = [
  "metrics",
  "metrics-util",
  "moka",
+ "parking_lot",
  "proptest",
  "rand 0.8.7",
  "rand 0.9.5",
@@ -9072,6 +9058,7 @@ name = "reth-metrics"
 version = "2.4.1"
 dependencies = [
  "futures",
+ "libc",
  "metrics",
  "metrics-derive",
  "reth-primitives-traits",
@@ -9106,10 +9093,12 @@ name = "reth-network"
 version = "2.4.1"
 dependencies = [
  "alloy-consensus",
+ "alloy-eip7928",
  "alloy-eips",
  "alloy-genesis",
  "alloy-primitives",
  "alloy-rlp",
+ "alloy-trie",
  "aquamarine",
  "auto_impl",
  "derive_more",
@@ -9144,11 +9133,14 @@ dependencies = [
  "reth-network-types",
  "reth-primitives-traits",
  "reth-provider",
+ "reth-stages-types",
  "reth-storage-api",
  "reth-tasks",
+ "reth-testing-utils",
  "reth-tokio-util",
  "reth-tracing",
  "reth-transaction-pool",
+ "reth-trie",
  "rustc-hash",
  "schnellru",
  "secp256k1 0.30.0",
