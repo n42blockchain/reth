@@ -83,13 +83,15 @@ toml.workspace = true
 zstd.workspace = true
 
 [features]
+# N42 keeps revmc/LLVM 22 opt-in so the default binary remains portable on
+# macOS and Windows builders without an LLVM toolchain. Use `--features jit`
+# explicitly on hosts that provide LLVM 22.
 default = [
     "jemalloc",
     "otlp",
     "otlp-logs",
     "reth-revm/portable",
     "js-tracer",
-    "jit",
     "keccak-cache-global",
     "asm-keccak",
     "gmp",

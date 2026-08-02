@@ -1,6 +1,13 @@
 #![allow(missing_docs)]
 
-use std::{fs, path::Path, process::Command};
+use std::{
+    fs,
+    net::{Ipv4Addr, SocketAddrV4, TcpListener, TcpStream},
+    path::Path,
+    process::{Child, Command, Stdio},
+    thread,
+    time::{Duration, Instant},
+};
 
 const RETH: &str = env!("CARGO_BIN_EXE_reth");
 
@@ -19,25 +26,109 @@ fn reth_ok(args: &[&str]) -> String {
     stdout.into_owned()
 }
 
-/// Spawns an isolated dev-mode reth node.
+struct DevInstance {
+    child: Child,
+    endpoint: String,
+}
+
+impl DevInstance {
+    fn endpoint(&self) -> &str {
+        &self.endpoint
+    }
+}
+
+impl Drop for DevInstance {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// Spawns an isolated dev-mode reth node and waits for its HTTP listener.
 ///
-/// Discovery is disabled and peer limits are zeroed so the node is fully
-/// isolated.  Each call gets a unique temporary data directory so that
-/// concurrent test runs never collide on the default `reth/dev/` path.
-fn spawn_dev() -> (alloy_node_bindings::RethInstance, tempfile::TempDir) {
-    use alloy_node_bindings::Reth;
+/// `alloy_node_bindings::Reth` has a fixed ten-second startup deadline. A
+/// debug test binary plus its child can exceed that on memory-constrained CI
+/// hosts even though the node is healthy, so these integration tests own the
+/// child and use a bounded 60-second readiness check. Each endpoint and data
+/// directory is unique, allowing the two dev-node tests to run concurrently.
+fn spawn_dev() -> (DevInstance, tempfile::TempDir) {
+    const API: &str = "eth,net,web3,txpool,trace,rpc,reth,ots,admin,debug";
 
     let datadir = tempfile::tempdir().expect("failed to create temp dir");
+    let listeners: Vec<_> = (0..4)
+        .map(|_| TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("failed to reserve port"))
+        .collect();
+    let ports: Vec<_> = listeners
+        .iter()
+        .map(|listener| listener.local_addr().expect("missing listener address").port())
+        .collect();
+    let [http_port, ws_port, auth_port, p2p_port]: [u16; 4] =
+        ports.try_into().expect("expected four reserved ports");
+    drop(listeners);
 
-    let instance = Reth::at(RETH)
-        .dev()
-        .disable_discovery()
-        .data_dir(datadir.path())
-        .args(["--max-outbound-peers", "0", "--max-inbound-peers", "0"])
-        .spawn();
+    let log_path = datadir.path().join("node.log");
+    let stdout = fs::File::create(&log_path).expect("failed to create dev node log");
+    let stderr = stdout.try_clone().expect("failed to clone dev node log");
+    let mut child = Command::new(RETH)
+        .env("RUST_LOG", "info")
+        .args([
+            "node",
+            "--dev",
+            "--ipcdisable",
+            "--http",
+            "--http.addr",
+            "127.0.0.1",
+            "--http.port",
+            &http_port.to_string(),
+            "--http.api",
+            API,
+            "--ws",
+            "--ws.addr",
+            "127.0.0.1",
+            "--ws.port",
+            &ws_port.to_string(),
+            "--ws.api",
+            API,
+            "--authrpc.port",
+            &auth_port.to_string(),
+            "--port",
+            &p2p_port.to_string(),
+            "--datadir",
+            datadir.path().to_str().expect("temporary data directory must be UTF-8"),
+            "--disable-discovery",
+            "--no-persist-peers",
+            "--color",
+            "never",
+            "--max-outbound-peers",
+            "0",
+            "--max-inbound-peers",
+            "0",
+        ])
+        .stdout(Stdio::from(stdout))
+        .stderr(Stdio::from(stderr))
+        .spawn()
+        .expect("failed to spawn dev node");
 
-    // Return the TempDir alongside the instance so it lives as long as the node.
-    (instance, datadir)
+    let address = SocketAddrV4::new(Ipv4Addr::LOCALHOST, http_port);
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        if let Some(status) = child.try_wait().expect("failed to inspect dev node") {
+            let log = fs::read_to_string(&log_path).unwrap_or_default();
+            panic!("dev node exited during startup with {status}\n{log}");
+        }
+        if TcpStream::connect_timeout(&address.into(), Duration::from_millis(100)).is_ok() {
+            break;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            let log = fs::read_to_string(&log_path).unwrap_or_default();
+            panic!("dev node did not open HTTP within 60 seconds\n{log}");
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+
+    (DevInstance { child, endpoint: format!("http://{address}") }, datadir)
 }
 
 fn create_tar_zst_snapshot(path: &Path) {
