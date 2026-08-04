@@ -19,6 +19,9 @@ reth-primitives-traits.workspace = true
 alloy-primitives.workspace = true
 alloy-consensus.workspace = true
 alloy-eip7928.workspace = true
+# Resolution guard for alloy-consensus' caret-constrained proc-macro helper.
+# Keep the complete Reth 2.4.1 Alloy matrix on one release line.
+alloy-tx-macros.workspace = true
 
 # misc
 auto_impl.workspace = true

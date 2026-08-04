@@ -40,6 +40,9 @@ use alloc::{
 use alloy_consensus::Header;
 use alloy_eip7928::BlockAccessListGasError;
 use alloy_primitives::{BlockHash, BlockNumber, Bloom, B256};
+// Dependency-resolution guard: alloy-consensus declares this helper with a
+// caret requirement, while Reth 2.4.1 requires the exact Alloy 2.2 matrix.
+use alloy_tx_macros as _;
 use core::{error::Error, fmt::Display};
 
 /// Pre-computed receipt root and logs bloom.
