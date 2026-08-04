@@ -694,3 +694,6 @@ vergen-git2 = "10.0.1"
 
 # networking
 ipnet = "2.11"
+
+[patch.crates-io]
+ark-relations = { git = "https://github.com/arkworks-rs/snark.git", rev = "845ce9d50bbe535792f04b44db78b009ee402ed7" }
