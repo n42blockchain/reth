@@ -475,6 +475,7 @@ alloy-transport = { version = "2.3.0" }
 alloy-transport-http = { version = "2.3.0", features = ["reqwest-rustls-tls"], default-features = false }
 alloy-transport-ipc = { version = "2.3.0", default-features = false }
 alloy-transport-ws = { version = "2.3.0", default-features = false }
+alloy-tx-macros = { version = "2.3.0", default-features = false }
 
 # misc
 either = { version = "1.16.0", default-features = false }
