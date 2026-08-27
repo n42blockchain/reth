@@ -23,7 +23,7 @@ use reth_storage_api::StateProvider;
 pub use reth_storage_errors::provider::ProviderError;
 use reth_trie_common::{updates::TrieUpdates, HashedPostState};
 use revm::{
-    database::{states::bundle_state::BundleRetention, BundleState, State},
+    database::{states::bundle_state::BundleRetention, BundleState, State, StateReadObserver},
     state::bal::Bal,
 };
 
@@ -50,6 +50,18 @@ pub trait Executor<DB: Database>: Sized {
     ) -> Result<BlockExecutionResult<<Self::Primitives as NodePrimitives>::Receipt>, Self::Error>
     where
         F: OnStateHook + 'static;
+
+    /// Installs `observer` on the executor's [`State`], to see every read it
+    /// answers and every commit it applies; see [`StateReadObserver`]. An
+    /// executor without a `State` of its own ignores it.
+    fn set_read_observer(&mut self, observer: Option<Box<dyn StateReadObserver>>) {
+        let _ = observer;
+    }
+
+    /// The observer installed with [`set_read_observer`](Self::set_read_observer).
+    fn read_observer_mut(&mut self) -> Option<&mut dyn StateReadObserver> {
+        None
+    }
 
     /// Consumes the type and executes the block.
     ///
@@ -704,6 +716,14 @@ where
         self.db.merge_transitions(BundleRetention::Reverts);
 
         result
+    }
+
+    fn set_read_observer(&mut self, observer: Option<Box<dyn StateReadObserver>>) {
+        self.db.set_read_observer(observer);
+    }
+
+    fn read_observer_mut(&mut self) -> Option<&mut dyn StateReadObserver> {
+        self.db.read_observer.as_deref_mut()
     }
 
     fn into_state(self) -> State<DB> {

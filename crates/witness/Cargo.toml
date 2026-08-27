@@ -1,0 +1,33 @@
+[package]
+name = "reth-witness"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Positional state-read witnesses: recorded while a block executes, replayed without state"
+
+[lints]
+workspace = true
+
+[dependencies]
+reth-evm = { workspace = true, features = ["std"] }
+reth-execution-types.workspace = true
+reth-primitives-traits = { workspace = true, features = ["std"] }
+
+revm.workspace = true
+alloy-primitives.workspace = true
+
+thiserror.workspace = true
+zstd.workspace = true
+
+[dev-dependencies]
+reth-chainspec.workspace = true
+reth-ethereum-consensus.workspace = true
+reth-ethereum-primitives.workspace = true
+reth-evm-ethereum.workspace = true
+alloy-consensus.workspace = true
+alloy-eips.workspace = true
+alloy-genesis.workspace = true
+tempfile.workspace = true

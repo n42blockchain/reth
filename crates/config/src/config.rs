@@ -267,7 +267,7 @@ impl Default for SenderRecoveryConfig {
 }
 
 /// Execution stage configuration.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default))]
 pub struct ExecutionConfig {
@@ -286,6 +286,9 @@ pub struct ExecutionConfig {
         )
     )]
     pub max_duration: Option<Duration>,
+    /// Where to record every executed block's state-read witness. `None`
+    /// records nothing. See `reth-witness`.
+    pub witness_dir: Option<PathBuf>,
 }
 
 impl Default for ExecutionConfig {
@@ -297,6 +300,7 @@ impl Default for ExecutionConfig {
             max_cumulative_gas: Some(30_000_000 * 50_000),
             // 10 minutes
             max_duration: Some(Duration::from_secs(10 * 60)),
+            witness_dir: None,
         }
     }
 }

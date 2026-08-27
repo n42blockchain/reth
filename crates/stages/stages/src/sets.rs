@@ -398,7 +398,7 @@ where
             .add_stage(ExecutionStage::from_config(
                 self.evm_config,
                 self.consensus,
-                self.stages_config.execution,
+                self.stages_config.execution.clone(),
                 self.stages_config.execution_external_clean_threshold(),
             ))
     }

@@ -1,6 +1,8 @@
 //! Helper type that represents one of two possible executor types
 
 use crate::{execute::Executor, Database, OnStateHook};
+use alloc::boxed::Box;
+use revm::database::StateReadObserver;
 
 // re-export Either
 pub use futures_util::future::Either;
@@ -38,6 +40,20 @@ where
         match self {
             Self::Left(a) => a.execute_one_with_state_hook(block, state_hook),
             Self::Right(b) => b.execute_one_with_state_hook(block, state_hook),
+        }
+    }
+
+    fn set_read_observer(&mut self, observer: Option<Box<dyn StateReadObserver>>) {
+        match self {
+            Self::Left(a) => a.set_read_observer(observer),
+            Self::Right(b) => b.set_read_observer(observer),
+        }
+    }
+
+    fn read_observer_mut(&mut self) -> Option<&mut dyn StateReadObserver> {
+        match self {
+            Self::Left(a) => a.read_observer_mut(),
+            Self::Right(b) => b.read_observer_mut(),
         }
     }
 

@@ -26,6 +26,13 @@ pub struct DebugArgs {
     #[arg(long = "debug.max-block", help_heading = "Debug")]
     pub max_block: Option<u64>,
 
+    /// Records every block the execution stage executes as a state-read
+    /// witness into this directory (`witness.idx` + `witness.NNNN.dat`),
+    /// for stateless re-execution. Resumable across restarts; unwinding
+    /// execution unwinds the recording.
+    #[arg(long = "debug.witness-dir", help_heading = "Debug", value_name = "PATH")]
+    pub witness_dir: Option<PathBuf>,
+
     /// Runs a fake consensus client that advances the chain using recent block hashes
     /// on Etherscan. If specified, requires an `ETHERSCAN_API_KEY` environment variable.
     #[arg(
@@ -132,6 +139,7 @@ impl Default for DebugArgs {
             terminate: false,
             tip: None,
             max_block: None,
+            witness_dir: None,
             etherscan: None,
             rpc_consensus_url: None,
             skip_fcu: None,

@@ -25,10 +25,12 @@ use reth_stages_api::{
 use reth_static_file_types::StaticFileSegment;
 use reth_trie::{hashed_cursor::zero_destroyed_account_storage, KeccakKeyHasher};
 use reth_trie_db::DatabaseHashedCursorFactory;
+use reth_witness::WitnessRecorder;
 use std::{
     cmp::{max, Ordering},
     collections::BTreeMap,
     ops::RangeInclusive,
+    path::PathBuf,
     sync::Arc,
     task::{ready, Context, Poll},
     time::{Duration, Instant},
@@ -97,6 +99,8 @@ where
     exex_manager_handle: ExExManagerHandle<E::Primitives>,
     /// Executor metrics.
     metrics: ExecutorMetrics,
+    /// Where every executed block's state-read witness is recorded, if anywhere.
+    witness_dir: Option<PathBuf>,
 }
 
 impl<E> ExecutionStage<E>
@@ -120,7 +124,15 @@ where
             post_unwind_commit_input: None,
             exex_manager_handle,
             metrics: ExecutorMetrics::default(),
+            witness_dir: None,
         }
+    }
+
+    /// Records every executed block's state-read witness into `dir`; see
+    /// [`reth_witness`]. `None` records nothing.
+    pub fn with_witness_dir(mut self, dir: Option<PathBuf>) -> Self {
+        self.witness_dir = dir;
+        self
     }
 
     /// Create an execution stage with the provided executor.
@@ -146,6 +158,7 @@ where
         config: ExecutionConfig,
         external_clean_threshold: u64,
     ) -> Self {
+        let witness_dir = config.witness_dir.clone();
         Self::new(
             evm_config,
             consensus,
@@ -153,6 +166,7 @@ where
             external_clean_threshold,
             ExExManagerHandle::empty(),
         )
+        .with_witness_dir(witness_dir)
     }
 
     /// Returns whether we can perform pruning of [`tables::AccountChangeSets`] and
@@ -307,6 +321,11 @@ where
 
         let db = StateProviderDatabase(LatestStateProviderRef::new(provider));
         let mut executor = self.evm_config.batch_executor(db);
+        if let Some(dir) = &self.witness_dir {
+            let recorder = WitnessRecorder::open(dir, start_block)
+                .map_err(|err| StageError::Fatal(Box::new(err)))?;
+            executor.set_read_observer(Some(Box::new(recorder)));
+        }
 
         // Progress tracking
         let mut stage_progress = start_block;
@@ -353,6 +372,9 @@ where
             // Execute the block
             let execute_start = Instant::now();
 
+            if let Some(observer) = executor.read_observer_mut() {
+                observer.begin_block(block_number);
+            }
             let result = self.metrics.metered_one(&block, |input| {
                 executor.execute_one(input).map_err(|error| StageError::Block {
                     block: Box::new(block.block_with_parent()),
@@ -367,6 +389,9 @@ where
                     block: Box::new(block.block_with_parent()),
                     error: BlockErrorKind::Validation(err),
                 })
+            }
+            if let Some(observer) = executor.read_observer_mut() {
+                observer.end_block().map_err(StageError::Fatal)?;
             }
             results.push(result);
 
@@ -405,6 +430,10 @@ where
             ) {
                 break
             }
+        }
+
+        if let Some(observer) = executor.read_observer_mut() {
+            observer.finish().map_err(StageError::Fatal)?;
         }
 
         // prepare execution output for writing
@@ -996,6 +1025,104 @@ mod tests {
                 total
             }
         }) if total == block.gas_used);
+    }
+
+    /// Genesis, one block with one transaction, and the pre-state that
+    /// transaction runs against; returns the block and the code it calls.
+    fn seed_one_block_chain(
+        factory: &reth_provider::ProviderFactory<reth_provider::test_utils::MockNodeTypesWithDB>,
+    ) -> (SealedBlock<Block>, B256, Vec<u8>) {
+        let provider = factory.provider_rw().unwrap();
+        let mut genesis_rlp = hex!("f901faf901f5a00000000000000000000000000000000000000000000000000000000000000000a01dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347942adc25665018aa1fe0e6bc666dac8fc2697ff9baa045571b40ae66ca7480791bbb2887286e4e4c4b1b298b191c889d6959023a32eda056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421b901000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000083020000808502540be400808000a00000000000000000000000000000000000000000000000000000000000000000880000000000000000c0c0").as_slice();
+        let genesis = SealedBlock::<Block>::decode(&mut genesis_rlp).unwrap();
+        let mut block_rlp = hex!("f90262f901f9a075c371ba45999d87f4542326910a11af515897aebce5265d3f6acd1f1161f82fa01dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347942adc25665018aa1fe0e6bc666dac8fc2697ff9baa098f2dcd87c8ae4083e7017a05456c14eea4b1db2032126e27b3b1563d57d7cc0a08151d548273f6683169524b66ca9fe338b9ce42bc3540046c828fd939ae23bcba03f4e5c2ec5b2170b711d97ee755c160457bb58d8daa338e835ec02ae6860bbabb901000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000083020000018502540be40082a8798203e800a00000000000000000000000000000000000000000000000000000000000000000880000000000000000f863f861800a8405f5e10094100000000000000000000000000000000000000080801ba07e09e26678ed4fac08a249ebe8ed680bf9051a5e14ad223e4b2b9d26e0208f37a05f6e3f188e3e6eab7d7d3b6568f5eac7d687b08d307d3154ccd8c87b4630509bc0").as_slice();
+        let block = SealedBlock::<Block>::decode(&mut block_rlp).unwrap();
+        provider.insert_block(&genesis.try_recover().unwrap()).unwrap();
+        provider.insert_block(&block.clone().try_recover().unwrap()).unwrap();
+        provider
+            .static_file_provider()
+            .latest_writer(StaticFileSegment::Headers)
+            .unwrap()
+            .commit()
+            .unwrap();
+        {
+            let static_file_provider = provider.static_file_provider();
+            let mut receipts_writer =
+                static_file_provider.latest_writer(StaticFileSegment::Receipts).unwrap();
+            receipts_writer.increment_block(0).unwrap();
+            receipts_writer.commit().unwrap();
+        }
+        provider.commit().unwrap();
+
+        // insert pre state
+        let provider = factory.provider_rw().unwrap();
+        let db_tx = provider.tx_ref();
+        let acc1 = address!("0x1000000000000000000000000000000000000000");
+        let acc2 = address!("0xa94f5374fce5edbc8e2a8697c15331677e6ebf0b");
+        let code = hex!("5a465a905090036002900360015500");
+        let balance = U256::from(0x3635c9adc5dea00000u128);
+        let code_hash = keccak256(code);
+        db_tx
+            .put::<tables::PlainAccountState>(
+                acc1,
+                Account { nonce: 0, balance: U256::ZERO, bytecode_hash: Some(code_hash) },
+            )
+            .unwrap();
+        db_tx
+            .put::<tables::PlainAccountState>(
+                acc2,
+                Account { nonce: 0, balance, bytecode_hash: None },
+            )
+            .unwrap();
+        db_tx.put::<tables::Bytecodes>(code_hash, Bytecode::new_raw(code.to_vec().into())).unwrap();
+        provider.commit().unwrap();
+        (block, code_hash, code.to_vec())
+    }
+
+    #[tokio::test]
+    async fn execution_records_a_witness_that_replays_the_block_without_state() {
+        let factory = create_test_provider_factory();
+        let (block, code_hash, code) = seed_one_block_chain(&factory);
+        let dir = tempfile::tempdir().unwrap();
+
+        let provider = factory.database_provider_rw().unwrap();
+        let mut execution_stage = stage().with_witness_dir(Some(dir.path().to_path_buf()));
+        let output = execution_stage
+            .execute(&provider, ExecInput { target: Some(1), checkpoint: None })
+            .unwrap();
+        assert!(output.done);
+        provider.commit().unwrap();
+
+        // Block 0 has its empty entry, block 1 what it read.
+        let store = reth_witness::WitnessStore::open(dir.path()).unwrap();
+        assert_eq!(store.blocks(), 2);
+        let mut witness = Vec::new();
+        store.read(0, &mut witness).unwrap();
+        assert!(witness.is_empty());
+        store.read(1, &mut witness).unwrap();
+        assert!(!witness.is_empty());
+
+        // The block re-executes from the witness alone, and the header agrees.
+        let chain_spec = Arc::new(ChainSpecBuilder::mainnet().berlin_activated().build());
+        let evm_config = EthEvmConfig::new(chain_spec.clone());
+        let recovered = block.clone().try_recover().unwrap();
+        let result = reth_witness::replay_block(
+            &evm_config,
+            &recovered,
+            &witness,
+            |hash| (hash == code_hash).then(|| Bytecode::new_raw(code.clone().into()).0),
+            |_| None,
+        )
+        .unwrap();
+        assert_eq!(result.gas_used, block.gas_used);
+        reth_ethereum_consensus::validate_block_post_execution(
+            &recovered,
+            chain_spec.as_ref(),
+            &result,
+            None,
+            None,
+        )
+        .unwrap();
     }
 
     #[tokio::test]

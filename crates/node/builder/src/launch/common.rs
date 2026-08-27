@@ -177,6 +177,9 @@ impl LaunchContext {
         // Update the config with the command line arguments. Only override when the CLI flag is
         // set, so the TOML value is preserved when the flag is not passed.
         toml_config.peers.trusted_nodes_only |= config.network.trusted_only;
+        if let Some(dir) = &config.debug.witness_dir {
+            toml_config.stages.execution.witness_dir = Some(dir.clone());
+        }
 
         // Merge static file CLI arguments with config file, giving priority to CLI
         toml_config.static_files =
